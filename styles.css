@@ -1,0 +1,1495 @@
+.view-content.ktm-board-host {
+  padding: 0;
+}
+
+.ktm-board {
+  --ktm-surface-board: var(--background-primary);
+  --ktm-surface-column: var(--background-secondary);
+  --ktm-surface-card: var(--background-primary);
+  --ktm-card-border: var(--background-modifier-border);
+  --ktm-signal-overdue: var(--color-red);
+  --ktm-signal-today: var(--text-accent);
+  --ktm-signal-invalid: var(--color-red);
+  --ktm-signal-priority-1: rgba(var(--color-orange-rgb), 0.7);
+  --ktm-signal-priority-2: var(--text-muted);
+  --ktm-signal-priority-4: var(--text-faint);
+  --ktm-chip-height: 18px;
+  --ktm-chip-padding-x: 7px;
+  --ktm-chip-icon: 12px;
+  --ktm-chip-parent-max: 160px;
+  --ktm-ticket-gap: 6px;
+  --ktm-error-width: 480px;
+  --ktm-column-min: 280px;
+  --ktm-today-header: 32px;
+  --ktm-today-tile: 180px;
+  --ktm-expanded-factor: 3;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ktm-surface-board);
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+  line-height: var(--line-height-tight);
+}
+
+.ktm-toolbar {
+  flex: 0 0 var(--header-height);
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: 0 var(--size-4-3);
+}
+
+.ktm-toolbar-spacer {
+  flex: 1;
+}
+
+.ktm-toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+}
+
+.ktm-button {
+  height: var(--input-height);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ktm-ticket-gap);
+  padding: 0 var(--size-4-3);
+  border: none;
+  border-radius: var(--radius-s);
+  background: var(--interactive-normal);
+  box-shadow: none;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ktm-button-icon {
+  display: inline-flex;
+}
+
+.ktm-button svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-level-segment {
+  display: inline-flex;
+  gap: var(--size-2-1);
+}
+
+.ktm-level-button {
+  height: var(--input-height);
+  padding: 0 var(--size-4-2);
+  border: none;
+  border-radius: var(--radius-s);
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+.ktm-level-button:hover {
+  color: var(--text-normal);
+}
+
+.ktm-level-button[data-active='false'] {
+  background: transparent;
+}
+
+.ktm-level-button[data-active='true'] {
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+}
+
+.ktm-view-select {
+  height: var(--input-height);
+}
+
+.ktm-today[data-collapsed] {
+  flex: 0 0 auto;
+  margin: 0 var(--size-4-3) var(--size-4-3);
+  background: var(--ktm-surface-column);
+  border-radius: var(--radius-m);
+}
+
+.ktm-today-header {
+  height: var(--ktm-today-header);
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-3);
+  padding: 0 var(--size-4-3);
+}
+
+.ktm-today-toggle {
+  display: inline-flex;
+  color: var(--text-faint);
+}
+
+.ktm-today-toggle svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-today-title {
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+}
+
+.ktm-today-none {
+  color: var(--text-faint);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-today-count {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-today-count-icon {
+  display: inline-flex;
+}
+
+.ktm-today-count svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.ktm-today-count[data-signal='overdue'] {
+  color: var(--ktm-signal-overdue);
+}
+
+.ktm-today-count[data-signal='planned'] {
+  color: var(--ktm-signal-today);
+}
+
+.ktm-today-spacer {
+  flex: 1;
+}
+
+.ktm-today-date {
+  color: var(--text-faint);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-today-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  padding: 0 var(--size-4-3) var(--size-4-2);
+}
+
+.ktm-today-item {
+  box-sizing: border-box;
+  width: var(--ktm-today-tile);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+  padding: var(--size-4-2) var(--size-4-3);
+  background: var(--ktm-surface-card);
+  border: 1px solid var(--ktm-card-border);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.ktm-today-item:hover {
+  border-color: var(--background-modifier-border-hover);
+}
+
+.ktm-today-item:focus {
+  outline: none;
+  border: var(--size-2-1) solid var(--background-modifier-border-focus);
+}
+
+.ktm-today-item-title {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ktm-today-item-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-today-date-signal {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  white-space: nowrap;
+}
+
+.ktm-today-item-icon {
+  display: inline-flex;
+}
+
+.ktm-today-item-meta svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.ktm-today-date-signal[data-signal='overdue'] {
+  color: var(--ktm-signal-overdue);
+}
+
+.ktm-today-date-signal[data-signal='today'] {
+  color: var(--ktm-signal-today);
+}
+
+.ktm-today-chip {
+  height: var(--ktm-chip-height);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--ktm-chip-padding-x);
+  border-radius: 2em;
+  background: var(--interactive-normal);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.ktm-today-priority {
+  display: inline-flex;
+  margin-left: auto;
+}
+
+.ktm-today-priority[data-priority='1'] {
+  color: var(--ktm-signal-priority-1);
+}
+
+.ktm-today-priority[data-priority='2'] {
+  color: var(--ktm-signal-priority-2);
+}
+
+.ktm-today-priority[data-priority='4'] {
+  color: var(--ktm-signal-priority-4);
+}
+
+.ktm-columns {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: var(--size-4-3);
+  padding: 0 var(--size-4-3) var(--size-4-3);
+  overflow-x: auto;
+}
+
+.ktm-column {
+  flex: 1 1 var(--ktm-column-min);
+  min-width: var(--ktm-column-min);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--ktm-surface-column);
+  border-radius: var(--radius-m);
+}
+
+.ktm-column-header {
+  flex: 0 0 var(--size-4-10);
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: 0 var(--size-4-3);
+}
+
+.ktm-column-toggle {
+  display: inline-flex;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-column-toggle svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-column[data-collapsed="true"] {
+  flex: 0 0 var(--size-4-10);
+  width: var(--size-4-10);
+  min-width: var(--size-4-10);
+}
+
+.ktm-column[data-collapsed="true"] .ktm-column-header {
+  flex: 1;
+  flex-direction: column;
+  padding: var(--size-4-2) 0;
+  cursor: pointer;
+}
+
+.ktm-column[data-collapsed="true"] .ktm-column-title {
+  flex: 0 1 auto;
+  writing-mode: vertical-rl;
+  max-height: 100%;
+}
+
+.ktm-column-title {
+  flex: 1;
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ktm-column-count {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-column-add {
+  display: inline-flex;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-column-add:hover {
+  color: var(--text-normal);
+}
+
+.ktm-column-add svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-column-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: 0 var(--size-4-2) var(--size-4-2);
+  overflow-y: auto;
+}
+
+.ktm-empty {
+  height: var(--size-4-16);
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--radius-s);
+}
+
+.ktm-card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+  padding: var(--size-4-2) var(--size-4-3);
+  background: var(--ktm-surface-card);
+  border: 1px solid var(--ktm-card-border);
+  border-radius: var(--radius-s);
+}
+
+.ktm-card-titlerow {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ktm-card-ticket {
+  color: var(--text-muted);
+  font-weight: var(--font-normal);
+  margin-right: var(--ktm-ticket-gap);
+}
+
+.ktm-card-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-3);
+  height: var(--size-4-4);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-card-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  white-space: nowrap;
+}
+
+.ktm-card-meta-icon {
+  display: inline-flex;
+}
+
+.ktm-card-meta-item svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.ktm-card-due[data-due='overdue'] {
+  color: var(--ktm-signal-overdue);
+}
+
+.ktm-card-due[data-due='today'],
+.ktm-card-planned[data-planned='today'] {
+  color: var(--ktm-signal-today);
+}
+
+.ktm-card-priority {
+  margin-left: auto;
+}
+
+.ktm-card-priority[data-priority='1'] {
+  color: var(--ktm-signal-priority-1);
+}
+
+.ktm-card-priority[data-priority='2'] {
+  color: var(--ktm-signal-priority-2);
+}
+
+.ktm-card-priority[data-priority='4'] {
+  color: var(--ktm-signal-priority-4);
+}
+
+.ktm-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-1);
+  max-height: calc(2 * var(--ktm-chip-height) + var(--size-4-1));
+  overflow: hidden;
+}
+
+.ktm-card-chip {
+  box-sizing: border-box;
+  height: var(--ktm-chip-height);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: 0 var(--ktm-chip-padding-x);
+  border-radius: 2em;
+  background: var(--tag-background);
+  color: var(--tag-color);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.ktm-card-project {
+  background: var(--interactive-normal);
+  color: var(--text-muted);
+}
+
+.ktm-card-parent {
+  background: none;
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+}
+
+.ktm-card-parent svg {
+  width: var(--ktm-chip-icon);
+  height: var(--ktm-chip-icon);
+  color: var(--text-faint);
+  flex: none;
+}
+
+.ktm-card-parent span {
+  max-width: var(--ktm-chip-parent-max);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ktm-card[data-done='true'] .ktm-card-title {
+  color: var(--text-muted);
+}
+
+.ktm-card:focus {
+  outline: none;
+  border: var(--size-2-1) solid var(--background-modifier-border-focus);
+}
+
+.ktm-card[data-dragging='true'] {
+  display: none;
+}
+
+.ktm-drag-ghost {
+  position: fixed;
+  margin: 0;
+  z-index: var(--layer-modal);
+  pointer-events: none;
+  box-shadow: var(--shadow-l);
+  opacity: 0.9;
+}
+
+.ktm-drop-placeholder {
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--radius-s);
+}
+
+.ktm-column[data-drop-target='true'] .ktm-column-body {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-card[data-invalid='true'] {
+  border-color: var(--ktm-signal-invalid);
+}
+
+.ktm-card[data-invalid='true'] .ktm-card-meta {
+  color: var(--ktm-signal-invalid);
+}
+
+.ktm-error-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ktm-card.ktm-error {
+  width: var(--ktm-error-width);
+  gap: var(--size-4-2);
+  padding: var(--size-4-3) var(--size-4-4);
+  border-color: var(--ktm-signal-invalid);
+}
+
+.ktm-error p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.ktm-error code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+}
+
+.ktm-error .ktm-button {
+  align-self: flex-start;
+  margin-top: var(--size-4-1);
+}
+
+.ktm-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  background: var(--background-modifier-cover);
+}
+
+.ktm-card.ktm-expanded {
+  position: absolute;
+  z-index: 11;
+  gap: var(--size-4-3);
+  max-height: calc(100% - 2 * var(--size-4-3));
+  padding: var(--size-4-3) var(--size-4-4) var(--size-4-4);
+  overflow-y: auto;
+  box-shadow: var(--shadow-s);
+}
+
+.ktm-card.ktm-expanded[data-popover='true'] {
+  overflow: visible;
+}
+
+/* Stacked draft (DESIGN.md component/state, F053): the card underneath
+   dimmed and non-interactive, the draft with a lighter border. BoardView
+   sets width and offset (finalizeOpen/expandedWidth). */
+.ktm-card.ktm-expanded[data-stacked='under'] {
+  filter: brightness(0.75);
+  pointer-events: none;
+}
+
+.ktm-card.ktm-expanded[data-stacked='over'] {
+  border-color: var(--background-modifier-border-hover);
+}
+
+.ktm-card.ktm-expanding {
+  transition:
+    left 150ms ease,
+    top 150ms ease,
+    width 150ms ease,
+    transform 150ms ease;
+}
+
+.ktm-expanded-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--size-4-2);
+}
+
+.ktm-expanded-title {
+  flex: 1;
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+}
+
+.ktm-title-field {
+  box-sizing: border-box;
+  width: 100%;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border-focus);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+}
+
+/* The draft's still-empty title (DESIGN.md draft): no edit-surface box
+   around the placeholder, just faint text and the input's own caret. Obsidian's
+   global focus rule for inputs outranks a bare :placeholder-shown selector on
+   specificity, so this repeats the ancestor class to win and clears focus's
+   box-shadow/outline too. */
+.ktm-expanded-title .ktm-title-field:placeholder-shown {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+.ktm-title-field::placeholder,
+.ktm-short-field::placeholder,
+.ktm-description-edit::placeholder {
+  color: var(--text-faint);
+}
+
+.ktm-placeholder {
+  color: var(--text-faint);
+}
+
+.ktm-expanded-note,
+.ktm-expanded-close {
+  flex: none;
+  display: inline-flex;
+  margin-top: 2px;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-expanded-note svg,
+.ktm-expanded-close svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-fields {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) 90px minmax(0, 1fr);
+  gap: var(--size-4-2) var(--size-4-3);
+  align-items: center;
+}
+
+.ktm-label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-value {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ktm-ticket-gap);
+  min-width: 0;
+  font-size: var(--font-ui-small);
+}
+
+.ktm-value svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.ktm-value-select {
+  justify-self: start;
+  max-width: 100%;
+  position: relative;
+}
+
+.ktm-value-select select {
+  min-width: 0;
+  max-width: 100%;
+  padding-right: calc(var(--icon-s) + var(--size-4-2));
+}
+
+/* Obsidian styles the select's own `.dropdown` class with a native/Obsidian
+   arrow at (0,2,0) specificity; match that with the select's own class so the
+   override wins regardless of stylesheet order. */
+.ktm-value-select select.dropdown {
+  appearance: none;
+  background-image: none;
+}
+
+.ktm-value-select .ktm-select-chevron {
+  position: absolute;
+  right: var(--size-4-1);
+  display: inline-flex;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.ktm-value-select .ktm-select-chevron svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-detail-tags {
+  grid-column: 2 / 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-1);
+  align-items: center;
+  min-width: 0;
+}
+
+/* A field-block row that spans the rest of the grid width: Tags and folder. */
+.ktm-field-span {
+  grid-column: 2 / 5;
+}
+
+.ktm-short-field {
+  box-sizing: border-box;
+  width: 100%;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border-focus);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-folder-value {
+  position: relative;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.ktm-folder-value:hover,
+.ktm-folder-value[data-editing='true'] {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-folder-path {
+  overflow: hidden;
+  color: var(--text-normal);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: var(--font-ui-smaller);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ktm-badge {
+  display: inline-flex;
+  align-items: center;
+  height: var(--size-4-4);
+  padding: 0 var(--size-4-2);
+  border-radius: 2em;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ktm-badge.is-own {
+  border: 1px solid rgba(var(--color-orange-rgb), 0.5);
+  color: var(--color-orange);
+}
+
+.ktm-chip-ghost {
+  background: none;
+  border: 1px dashed var(--background-modifier-border);
+  color: var(--text-faint);
+}
+
+.ktm-chip-remove {
+  display: inline-flex;
+  color: var(--text-faint);
+}
+
+.ktm-chip-remove svg {
+  width: var(--ktm-chip-icon);
+  height: var(--ktm-chip-icon);
+}
+
+.ktm-tag-input {
+  box-sizing: border-box;
+  height: 26px;
+  min-width: 100px;
+  padding: 0 6px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border-focus);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-tag-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--size-4-2);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-s);
+}
+
+.ktm-expanded-body {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--size-4-4);
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: var(--size-4-3);
+}
+
+.ktm-section-title {
+  margin-bottom: var(--size-4-2);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-section-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--size-4-2);
+}
+
+.ktm-section-head .ktm-section-title {
+  margin-bottom: 0;
+}
+
+.ktm-section-plus {
+  display: inline-flex;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-section-plus:hover,
+.ktm-section-head[data-open='true'] .ktm-section-plus {
+  color: var(--text-normal);
+}
+
+.ktm-section-plus svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-linkmenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-s);
+}
+
+.ktm-linkmenu-select {
+  box-sizing: border-box;
+  height: 26px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--size-4-2);
+  background: var(--interactive-normal);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+.ktm-linkmenu-select-label {
+  overflow: hidden;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ktm-linkmenu-select-label svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  flex: none;
+}
+
+.ktm-linkmenu-select .ktm-select-chevron {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-muted);
+}
+
+.ktm-linkmenu-select .ktm-select-chevron svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-search {
+  box-sizing: border-box;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border-focus);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+}
+
+.ktm-search svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  flex: none;
+}
+
+.ktm-search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-search-input:focus {
+  outline: none;
+}
+
+.ktm-linkmenu-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.ktm-linkmenu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px;
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ktm-linkmenu-item svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  flex: none;
+}
+
+.ktm-linkmenu-item[data-hover='true'] {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-linkmenu-folder {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-linkmenu-create {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.ktm-linkmenu-create .ktm-linkmenu-item,
+.ktm-linkmenu-create .ktm-linkmenu-item svg {
+  color: var(--text-accent);
+}
+
+.ktm-iconpicker {
+  z-index: 3;
+  box-sizing: border-box;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-s);
+}
+
+.ktm-iconpicker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 32px);
+  gap: var(--size-2-1);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.ktm-iconpicker-cell {
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ktm-iconpicker-cell svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-iconpicker-cell:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-iconpicker-cell[data-selected='true'] {
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+}
+
+.ktm-description {
+  line-height: 1.5;
+}
+
+.ktm-description-rendered p {
+  margin: 0 0 var(--size-4-2);
+}
+
+.ktm-description-rendered li:has(> input:checked) {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.ktm-description-edit {
+  width: 100%;
+  min-height: 160px;
+  padding: var(--size-4-2);
+  resize: vertical;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+.ktm-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-4);
+}
+
+.ktm-side .ktm-fields {
+  grid-template-columns: 70px minmax(0, 1fr);
+}
+
+.ktm-priority-value .ktm-card-priority {
+  margin-left: 0;
+}
+
+.ktm-date-value[data-due='overdue'] {
+  color: var(--ktm-signal-overdue);
+}
+
+.ktm-date-value[data-due='today'],
+.ktm-date-value[data-planned='today'] {
+  color: var(--ktm-signal-today);
+}
+
+.ktm-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.ktm-date-field {
+  box-sizing: border-box;
+  width: 120px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border-focus);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-calendar {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  width: 248px;
+  padding: var(--size-4-2);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-s);
+}
+
+.ktm-calendar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 24px;
+  margin-bottom: 4px;
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+}
+
+.ktm-calendar-nav {
+  display: inline-flex;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ktm-calendar-head svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+  color: var(--text-muted);
+}
+
+.ktm-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+}
+
+.ktm-calendar-grid span {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-calendar-grid .is-week {
+  color: var(--text-faint);
+}
+
+.ktm-calendar-grid .is-head {
+  color: var(--text-muted);
+}
+
+.ktm-calendar-grid .is-other {
+  color: var(--text-faint);
+}
+
+.ktm-calendar-grid .is-today {
+  color: var(--text-accent);
+  font-weight: var(--font-medium);
+}
+
+.ktm-calendar-grid .is-selected {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-radius: 4px;
+}
+
+.ktm-links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+}
+
+.ktm-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ktm-ticket-gap);
+  overflow: hidden;
+  color: var(--text-accent);
+  font-size: var(--font-ui-small);
+  white-space: nowrap;
+  cursor: pointer;
+  margin: -2px -4px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.ktm-link-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.ktm-link-icon svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.ktm-link .ktm-label {
+  flex: none;
+  width: 60px;
+}
+
+.ktm-link-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ktm-link-remove {
+  flex: none;
+  display: inline-flex;
+  margin-left: auto;
+  color: var(--text-faint);
+  visibility: hidden;
+}
+
+.ktm-link-remove svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.ktm-link[data-hover='true'] {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-link[data-hover='true'] .ktm-link-remove {
+  visibility: visible;
+}
+
+.ktm-child-status {
+  flex: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ktm-board *,
+  .ktm-drag-ghost {
+    animation-duration: 0.01ms;
+    transition-duration: 0.01ms;
+  }
+}
+
+/* Settings tab (DESIGN.md components "Einstellungsseite",
+   "Reihenfolge-Liste"). .setting-item, .checkbox-container and .dropdown are
+   Obsidian's own classes and stay unstyled (Setting API without its own
+   row styling); only the ktm-specific building blocks are here. */
+.ktm-settings {
+  padding: calc(var(--size-4-4) + var(--size-4-2)) var(--size-4-10) var(--size-4-10);
+}
+
+.ktm-settings h2 {
+  margin: 0 0 var(--size-4-3);
+  font-size: 17px;
+  font-weight: var(--font-semibold);
+}
+
+.ktm-settings h3 {
+  margin: calc(var(--size-4-4) + var(--size-4-3)) 0 var(--size-4-2);
+  font-size: 14px;
+  font-weight: var(--font-semibold);
+}
+
+.ktm-settings h3:first-of-type {
+  margin-top: var(--size-4-4);
+}
+
+.ktm-scope {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 var(--size-4-3);
+}
+
+.ktm-scope-hint {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-1);
+  margin: 0 0 var(--size-4-2);
+  padding-bottom: var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.ktm-jump span {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  padding: 3px var(--size-4-2);
+  border-radius: 2em;
+  border: 1px solid var(--background-modifier-border);
+  cursor: pointer;
+}
+
+.ktm-orderlist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+  padding: var(--size-4-2) 0 var(--size-4-1);
+}
+
+.ktm-orderrow {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
+.ktm-orderrow[data-off='true'] {
+  opacity: 0.55;
+}
+
+.ktm-orderrow .grip {
+  display: inline-flex;
+  color: var(--text-faint);
+  cursor: grab;
+}
+
+.ktm-orderrow .grip svg,
+.ktm-orderrow .ico svg,
+.ktm-orderrow .x svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.ktm-orderrow .ico {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.ktm-orderrow .ico.is-btn {
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.ktm-orderrow .nm {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ktm-orderrow .key {
+  overflow: hidden;
+  white-space: nowrap;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.ktm-orderrow .key.is-wide {
+  flex: 2;
+  text-overflow: ellipsis;
+}
+
+.ktm-orderrow .x {
+  display: inline-flex;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-orderrow .ktm-textinput {
+  height: 26px;
+  width: 150px;
+}
+
+.ktm-orderrow .ktm-button {
+  height: 24px;
+  padding: 0 var(--size-4-2);
+}
+
+.ktm-orderrow .checkbox-container {
+  transform: scale(0.85);
+}
+
+.ktm-addrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 var(--size-4-3);
+  margin-top: 6px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ktm-addrow svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.ktm-textinput {
+  box-sizing: border-box;
+  height: var(--input-height);
+  display: inline-flex;
+  align-items: center;
+  width: 240px;
+  padding: 0 var(--size-4-2);
+  overflow: hidden;
+  white-space: nowrap;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-textinput.is-mono {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: var(--font-ui-smaller);
+}
+
+/* Obsidian's own rule .setting-item-control input sets width:100% with
+   the same specificity as a plain .ktm-textinput; only the double
+   class selector reliably wins. */
+.setting-item-control .ktm-textinput {
+  width: 240px;
+}
+
+.setting-item-control .ktm-textinput.is-num {
+  width: 70px;
+}
+
+input.ktm-textinput.is-num {
+  appearance: textfield;
+}
+
+input.ktm-textinput.is-num::-webkit-outer-spin-button,
+input.ktm-textinput.is-num::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
