@@ -1,5 +1,5 @@
-import { type App, getFrontMatterInfo, MarkdownView, type TFile, TFolder } from 'obsidian';
-import { FORMAT_NOTE, FORMAT_NOTE_PATH } from '../core/format-doc';
+import { type App, getFrontMatterInfo, MarkdownView, TFile, TFolder } from 'obsidian';
+import { FORMAT_NOTE, FORMAT_NOTE_PATH, replaceLevelSection } from '../core/format-doc';
 import { applyFrontmatter, type FrontmatterChange } from '../core/frontmatter';
 import type { FileEntry, ProjectRoot } from '../core/model';
 
@@ -120,13 +120,33 @@ export async function writeBody(app: App, path: string, body: string): Promise<v
  * whose Done mirror was seeded by an earlier child — the whole rename would
  * fail, so each remaining entry of the source is moved into the existing target
  * and the emptied source folder is trashed.
+ *
+ * Every collision this could hit is checked before anything moves (008 S47,
+ * F068 K3): `to` already a file, `from` a file with `to` occupied by either
+ * kind, or — the folder-merge case above — an entry of `from` sharing its name
+ * with one already sitting in `to`. `renameFile` itself only refuses the
+ * first two (#5); the merge case would otherwise silently overwrite or
+ * partially move before failing, so it is checked up front the same way.
  */
 export async function moveElement(app: App, from: string, to: string, parent: string): Promise<void> {
   const file = app.vault.getAbstractFileByPath(from);
   if (!file) throw new Error(`Element nicht gefunden: ${from}`);
-  await ensureFolder(app, parent);
 
   const target = app.vault.getAbstractFileByPath(to);
+  if (target instanceof TFile || (file instanceof TFile && target)) {
+    throw new Error(`Ziel existiert bereits: ${to}`);
+  }
+  if (file instanceof TFolder && target instanceof TFolder) {
+    const existingNames = new Set(target.children.map((c) => c.name));
+    for (const child of file.children) {
+      if (existingNames.has(child.name)) {
+        throw new Error(`Ziel existiert bereits: ${to}/${child.name}`);
+      }
+    }
+  }
+
+  await ensureFolder(app, parent);
+
   if (file instanceof TFolder && target instanceof TFolder) {
     for (const child of [...file.children]) {
       await app.fileManager.renameFile(child, `${to}/${child.name}`);
@@ -171,17 +191,34 @@ export function folderExists(app: App, path: string): boolean {
 }
 
 /**
- * Writes the format description once. On a vault that already has the note this
- * is a no-op, so it can run on every load; a concurrent creation is tolerated
- * by re-checking after a failed create.
+ * Writes the format description and keeps its maintained level section
+ * current (005 addendum 2026-09-20). Creates the note with `FORMAT_NOTE` plus
+ * `section` when it is missing, tolerating a concurrent creation by
+ * re-checking after a failed create; otherwise replaces only the text between
+ * the level-section markers via `Vault.process`; a still-open view is flushed
+ * first. Content that would not actually change is left unwritten, so a
+ * settings save that carries no level change does not re-trigger the
+ * `metadataCache.on('changed')` hook that calls this in the first place.
  */
-export async function ensureFormatDoc(app: App): Promise<void> {
-  if (app.vault.getAbstractFileByPath(FORMAT_NOTE_PATH)) return;
-  const cut = FORMAT_NOTE_PATH.lastIndexOf('/');
-  if (cut !== -1) await ensureFolder(app, FORMAT_NOTE_PATH.slice(0, cut));
-  try {
-    await app.vault.create(FORMAT_NOTE_PATH, FORMAT_NOTE);
-  } catch (err) {
-    if (!app.vault.getAbstractFileByPath(FORMAT_NOTE_PATH)) throw err;
+export async function syncFormatDoc(app: App, section: string): Promise<void> {
+  const existing = app.vault.getAbstractFileByPath(FORMAT_NOTE_PATH);
+  if (!existing) {
+    const cut = FORMAT_NOTE_PATH.lastIndexOf('/');
+    if (cut !== -1) await ensureFolder(app, FORMAT_NOTE_PATH.slice(0, cut));
+    const content = replaceLevelSection(FORMAT_NOTE, section);
+    try {
+      await app.vault.create(FORMAT_NOTE_PATH, content);
+    } catch (err) {
+      if (!app.vault.getAbstractFileByPath(FORMAT_NOTE_PATH)) throw err;
+    }
+    return;
   }
+  if (!(existing instanceof TFile)) return;
+
+  const current = await app.vault.cachedRead(existing);
+  const next = replaceLevelSection(current, section);
+  if (next === current) return;
+
+  await flushOpenViews(app, existing);
+  await app.vault.process(existing, (data) => replaceLevelSection(data, section));
 }

@@ -46,7 +46,8 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
-function splitFrontmatter(raw: string): {
+/** Exported for tests that need to round-trip written content through a real YAML parser (F067). */
+export function splitFrontmatter(raw: string): {
   frontmatter: Record<string, unknown>;
   body: string;
 } {

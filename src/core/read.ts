@@ -7,7 +7,7 @@ import type {
   ParentRef,
   ProjectRoot,
 } from './model';
-import { DEFAULT_LEVELS, type Level, type LinkKind, resolveLinkKinds } from './settings';
+import { bottomLevel, DEFAULT_LEVELS, type Level, type LinkKind, resolveLinkKinds } from './settings';
 
 const ATOMIC_PREFIX = '_Tasks/Atomic/';
 const ARCHIVE_SEGMENT = 'Archive';
@@ -79,7 +79,7 @@ export function read(
     result.push(nestedElement(note, basenameIndex, folderIndex, levelsFor, linkKindsFor(note.project)));
   }
   for (const entry of atomic) {
-    result.push(atomicElement(entry, linkKindsFor(text(entry.frontmatter.project))));
+    result.push(atomicElement(entry, linkKindsFor(text(entry.frontmatter.project)), levelsFor));
   }
   for (const entry of invalid) {
     result.push(invalidElement(entry));
@@ -105,7 +105,7 @@ export function readElements(
     result.push(nestedElement(note, basenameIndex, folderIndex, levelsFor, linkKindsFor(note.project)));
   }
   for (const entry of atomic) {
-    result.push(atomicElement(entry, linkKindsFor(text(entry.frontmatter.project))));
+    result.push(atomicElement(entry, linkKindsFor(text(entry.frontmatter.project)), levelsFor));
   }
   for (const entry of invalid) {
     result.push(invalidElement(entry));
@@ -134,6 +134,11 @@ function collect(entries: FileEntry[], roots: ProjectRoot[], levelsFor: LevelsFo
       const fileName = parts[parts.length - 1];
       if (!fileName.startsWith('_')) continue;
       if (parts[0] === ARCHIVE_SEGMENT) continue;
+      // The project's own note (F085, 006 addendum 2026-09-24, "Projekt
+      // hinzufügen" places it at `<Root>/_Kanban.md`) is not a task, even
+      // though its name starts with `_`: it lies directly in the root
+      // (`parts.length === 1`) and carries `ktm_project` (K10/K11).
+      if (parts.length === 1 && typeof entry.frontmatter.ktm_project === 'string') continue;
 
       const type = elementType(entry.frontmatter.type);
       if (!type || !hasStatus(entry.frontmatter.status)) {
@@ -222,19 +227,18 @@ function nestedElement(
   return element;
 }
 
-function atomicElement(entry: FileEntry, linkKinds: LinkKind[]): BoardElement {
-  if (elementType(entry.frontmatter.type) !== 'task' || !hasStatus(entry.frontmatter.status)) {
+// Valid when its `type` is the bottom level of its project (levelsFor,
+// F072 S22): an atomic note carries that type instead of a fixed `'task'`.
+function atomicElement(entry: FileEntry, linkKinds: LinkKind[], levelsFor: LevelsFor): BoardElement {
+  const project = text(entry.frontmatter.project);
+  const bottom = bottomLevel(levelsFor(project));
+  if (!bottom || elementType(entry.frontmatter.type) !== bottom.key || !hasStatus(entry.frontmatter.status)) {
     return invalidElement(entry);
   }
   return {
-    type: 'task',
+    type: bottom.key,
     form: 'atomic',
-    ...common(
-      entry,
-      titleOf(entry, baseName(entry.path)),
-      text(entry.frontmatter.project) || undefined,
-      linkKinds,
-    ),
+    ...common(entry, titleOf(entry, baseName(entry.path)), project || undefined, linkKinds),
     parents: [],
     paths: { note: entry.path },
   };

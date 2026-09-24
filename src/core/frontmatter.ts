@@ -1,13 +1,47 @@
 export type FrontmatterChange = Record<string, string | null>;
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+// Excludes YAML's structural and flow indicators (`: , [ ] { } # & * ! | > " % @` and
+// backtick) plus a leading `-`, `?` or `'`; safe as long as it's a whole-value match.
+const SAFE_SCALAR = /^[\p{L}\p{N} '\-_/.]*$/u;
+const LEADING_INDICATOR = /^[-?:,[\]{}#&*!|>'"%@`]/;
+const YAML_RESERVED = new Set(['true', 'false', 'null', 'yes', 'no', 'on', 'off', '~']);
+const NUMERIC =
+  /^[+-]?(0x[0-9a-fA-F]+|0o[0-7]+|(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?|\.(inf|nan))$/i;
+
+/**
+ * Renders a text scalar the way it would need to appear in YAML so a parser
+ * reads back exactly this string: unquoted when that is unambiguous (an ISO
+ * date, or plain text without leading/trailing space, YAML indicator
+ * characters, or a reading as a boolean/null/number), JSON-quoted otherwise. A
+ * JSON string is a valid double-quoted YAML scalar in both YAML 1.1 and 1.2,
+ * so this needs no YAML library at runtime (F067).
+ */
+export function yamlScalar(value: string): string {
+  if (ISO_DATE.test(value)) return value;
+  if (isSafeUnquoted(value)) return value;
+  return JSON.stringify(value);
+}
+
+function isSafeUnquoted(value: string): boolean {
+  if (value.length === 0) return false;
+  if (/^\s|\s$/.test(value)) return false;
+  if (LEADING_INDICATOR.test(value)) return false;
+  if (!SAFE_SCALAR.test(value)) return false;
+  if (YAML_RESERVED.has(value.toLowerCase())) return false;
+  if (NUMERIC.test(value)) return false;
+  return true;
+}
+
 /**
  * Renders a list as a single-line YAML flow sequence, `tags: [a, b]` style —
  * the form the fixtures already carry for `tags`, `notes` and `adr` (008).
  * Quoted items (`notes`/`adr` wikilinks, which contain `[[` and `]]`) are
- * JSON-escaped; bare tags need no quoting.
+ * JSON-escaped; bare entries go through {@link yamlScalar}, which quotes only
+ * where a tag would otherwise read back differently (008 S51).
  */
 export function flowList(items: string[], quote: boolean): string {
-  const body = items.map((item) => (quote ? JSON.stringify(item) : item)).join(', ');
+  const body = items.map((item) => (quote ? JSON.stringify(item) : yamlScalar(item))).join(', ');
   return `[${body}]`;
 }
 

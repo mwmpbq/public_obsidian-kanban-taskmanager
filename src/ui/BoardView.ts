@@ -25,23 +25,22 @@ import {
   buildBoard,
   orderChildren,
 } from '../core/board';
-import {
-  adrTarget,
-  atomicNotePath,
-  linkFolder,
-  nestedPaths,
-  noteContent,
-  noteTarget,
-  uniqueName,
-} from '../core/create';
-import { dueState, fullDate, priorityIcon, relativeDate, visibleTags } from '../core/dates';
+import { adrTarget, linkFolder, noteContent, noteTarget, uniqueName } from '../core/create';
+import { fullDate, priorityIcon, relativeDate } from '../core/dates';
 import { type DoneElement, guardMove, planDone } from '../core/done';
 import type { FrontmatterChange } from '../core/frontmatter';
 import type { BoardElement, ElementType, ParentRef, ProjectRoot, TaskForm } from '../core/model';
 import { type Move, type MoveDirection, moveByDirection, moveToColumn } from '../core/move';
 import { reorderColumn } from '../core/order';
 import { linksOf, readElements } from '../core/read';
-import { planRefile } from '../core/refile';
+import {
+  planDraftPlacement,
+  planFiling,
+  planRefile,
+  projectRootForElement,
+  type RefileEnv,
+  type RefilePlan,
+} from '../core/refile';
 import {
   DEFAULT_TODAY_SORT,
   orderTodayTiles,
@@ -56,20 +55,25 @@ import {
   type LinkKind,
   type ProjectSettings,
   type ResolvedSettings,
+  bottomLevel,
+  canonicalStatus,
+  doneStatuses as columnDoneStatuses,
   resolveCardFields,
   resolveColumns,
   resolveLevels,
   resolveProjectSettings,
   settingsFor,
+  statusClosure,
+  withoutHiddenProjects,
 } from '../core/settings';
 import type KanbanTaskManagerPlugin from '../main';
+import { renderCardFace } from './cardFace';
 import { CardDetail, type DraftTarget, type LinkSearchResult, type RefileRequest } from './CardDetail';
 
 export const VIEW_TYPE_BOARD = 'ktm-board';
 
 const ICON_PLANNED = 'calendar';
 const ICON_DUE = 'flag';
-const ICON_CHECKLIST = 'check-square';
 
 const VIEW_ALL = 'all';
 const VIEW_INTERNAL = 'internal';
@@ -78,11 +82,14 @@ const VIEW_INTERNAL = 'internal';
 // wiring is real once that command lands, and a plain pass-through until then.
 const NEW_TASK_COMMAND = 'kanban-taskmanager:new-task';
 
-// `commands` and `setting` are part of the running app but not of the public
-// typings; the board only forwards to them.
+// `commands`, `setting` and `internalPlugins` are part of the running app but
+// not of the public typings; the board only forwards to them.
 interface DesktopApp extends App {
   commands: { executeCommandById(id: string): boolean };
   setting: { open(): void };
+  internalPlugins: {
+    getPluginById(id: string): { instance?: { revealInFolder?(file: TAbstractFile): void } } | null;
+  };
 }
 
 // Business data of a stacked draft (F053): the source card it was created
@@ -170,7 +177,9 @@ export class BoardView extends ItemView {
   private renderSeq = 0;
   private columns: Column[] = [];
   private cardFields: CardField[] = resolveCardFields();
+  private doneLimit?: number;
   private today = '';
+  private rendered = false;
   private drag?: DragState;
   private reconciling = false;
   private reconcileTimer?: number;
@@ -205,10 +214,27 @@ export class BoardView extends ItemView {
     return { ...super.getState(), view: this.view, level: this.level };
   }
 
+  // Applies a state handed in through setViewState (F059, opening from the
+  // ribbon or the command with an openView/openLevel default): if the view is
+  // already rendered — Obsidian may call this only after onOpen's first
+  // render has already drawn the constructor's defaults — the new view/level
+  // is persisted as the last-used one and the board redraws (wissen #128:
+  // plugin.settings must be written before render(), which reloads it from
+  // disk). Arriving before the first render needs neither, that render()
+  // already picks up the fields set here.
   async setState(state: BoardViewState, result: Parameters<ItemView['setState']>[1]): Promise<void> {
-    if (typeof state?.view === 'string') this.view = state.view;
-    if (state?.level) this.level = state.level;
+    const nextView = typeof state?.view === 'string' ? state.view : undefined;
+    const nextLevel = state?.level;
+    const changed =
+      (nextView !== undefined && nextView !== this.view) ||
+      (nextLevel !== undefined && nextLevel !== this.level);
+    if (nextView !== undefined) this.view = nextView;
+    if (nextLevel !== undefined) this.level = nextLevel;
     await super.setState(state, result);
+    if (changed && this.rendered) {
+      await this.plugin.saveViewState(this.view, this.level);
+      await this.render();
+    }
   }
 
   async onOpen(): Promise<void> {
@@ -296,17 +322,22 @@ export class BoardView extends ItemView {
     const { entries, roots } = await readVault(this.app);
     if (seq !== this.renderSeq) return;
 
-    this.cardFields = resolveCardFields(this.plugin.settings);
     const resolved = resolveProjectSettings(entries);
-    this.projects = resolved.projects;
+    // A hidden project (F085, 006 addendum 2026-09-24) is dropped from
+    // this.projects (view dropdown, currentProject, projectSettings) and its
+    // files from what readElements/renderToday ever see (K18-K20); the
+    // settings page reads resolveProjectSettings itself and keeps it visible
+    // there (K22).
+    this.projects = resolved.projects.filter((p) => !p.hidden);
+    const visible = withoutHiddenProjects(entries, roots, resolved.projects);
     const levelsFor = (project: string) => this.projectSettings(project).levels;
     const linkKindsFor = (project: string) => this.projectSettings(project).linkKinds;
-    const elements = readElements(entries, roots, linkKindsFor, levelsFor);
+    const elements = readElements(visible.entries, visible.roots, linkKindsFor, levelsFor);
     this.elementByPath.clear();
     for (const el of elements) this.elementByPath.set(el.paths.note, el);
     this.bodyByPath.clear();
-    for (const entry of entries) this.bodyByPath.set(entry.path, entry.body);
-    this.roots = roots;
+    for (const entry of visible.entries) this.bodyByPath.set(entry.path, entry.body);
+    this.roots = visible.roots;
     this.today = todayISO(this.contentEl.win);
 
     const reconcile = await this.reconcileDone(elements);
@@ -318,12 +349,17 @@ export class BoardView extends ItemView {
 
     this.normalizeView();
     const project = this.currentProject();
+    // "Alle" shows the general cardFields, a project view its own override if
+    // set (project undefined for both "all" and "internal"): settingsFor
+    // already falls back to the general value (F058, BoardView#renderCard).
+    this.cardFields = settingsFor(this.plugin.settings, project).cardFields;
     const levels = this.currentLevels(project);
     this.normalizeLevel(levels);
 
     this.discardDetail();
     this.contentEl.empty();
     this.contentEl.addClass('ktm-board-host');
+    this.rendered = true;
     const boardEl = this.contentEl.createDiv({ cls: 'ktm-board' });
     this.renderToolbar(boardEl, levels);
 
@@ -333,7 +369,12 @@ export class BoardView extends ItemView {
     }
 
     this.columns = resolveColumns(this.plugin.settings, project);
-    const board = buildBoard(elements, this.filter(), this.columns, { level: this.level });
+    this.doneLimit = settingsFor(this.plugin.settings, project).doneLimit;
+    const board = buildBoard(elements, this.filter(), this.columns, {
+      level: this.level,
+      bottomLevel: bottomLevel(levels)?.key,
+      doneLimit: this.doneLimit,
+    });
     this.showNotices([...resolved.notices, ...board.notices, ...reconcile.notices]);
 
     this.renderToday(boardEl, elements);
@@ -352,6 +393,74 @@ export class BoardView extends ItemView {
       this.shownNotices.add(message);
       new Notice(message, NOTICE_DURATION);
     }
+  }
+
+  // The shared fault-handling for a write to the vault (008 S46, F068 K1):
+  // `fn` runs, a thrown error surfaces as a Notice naming the action and the
+  // path, and the board is always redrawn afterwards so it shows the vault's
+  // real state — the write may have partially landed, or not at all. `path`
+  // may be a getter instead of a fixed string for a loop that writes several
+  // files (applyReorder): it is read only once `fn` has actually thrown, by
+  // which point the caller has updated it to the entry that failed.
+  private async persist(
+    action: string,
+    path: string | (() => string),
+    fn: () => Promise<void>,
+  ): Promise<boolean> {
+    let ok = true;
+    try {
+      await fn();
+    } catch (err) {
+      ok = false;
+      this.failureNotice(action, typeof path === 'function' ? path() : path, errorMessage(err));
+    }
+    await this.render();
+    return ok;
+  }
+
+  private failureNotice(action: string, path: string, reason: string): void {
+    new Notice(`${action} fehlgeschlagen: ${path} (${reason})`, NOTICE_DURATION);
+  }
+
+  // A note whose `status` is an old alias (an old column name that survives
+  // only as an alias, 008 S43) gets rewritten to the reserved key it stands
+  // for the next time the board writes anything on it — unless this very
+  // change already sets `status` itself.
+  private withCanonicalStatus(
+    element: BoardElement | undefined,
+    change: FrontmatterChange,
+  ): FrontmatterChange {
+    if (!element || 'status' in change) return change;
+    const project = element.project ? this.projects.find((p) => p.key === element.project) : undefined;
+    const columns = resolveColumns(this.plugin.settings, project);
+    const canonical = canonicalStatus(element.status, columns);
+    return canonical ? { ...change, status: canonical } : change;
+  }
+
+  // Re-parents an already-open detail overlay (cardEl, coverEl, and the
+  // dimmed stacked base beneath it, if any) onto the freshly rendered board
+  // after a failed write (008 S45/S46, F068 K1/K2): the CardDetail instance
+  // and its unsaved edits are kept as they are, only their DOM host moves.
+  // `base` is only ever passed by closeDraft, after render() has run with
+  // `this.stackedBase` already cleared (so discardDetail() left it alone).
+  private reattachDetail(open: OpenDetail, base?: OpenDetail): void {
+    const boardEl = this.contentEl.querySelector<HTMLElement>('.ktm-board');
+    if (!boardEl) return;
+    boardEl.appendChild(open.coverEl);
+    if (base) {
+      boardEl.appendChild(base.cardEl);
+      this.stackedBase = base;
+    }
+    boardEl.appendChild(open.cardEl);
+    open.resize.disconnect();
+    const win = this.contentEl.win as Window & { ResizeObserver: typeof ResizeObserver };
+    const resize = new win.ResizeObserver(() => {
+      if (open.cardEl.getAttribute('data-expanded') === 'true') {
+        open.cardEl.style.width = `${this.expandedWidth(boardEl, !!open.stackedFrom)}px`;
+      }
+    });
+    resize.observe(boardEl);
+    this.detail = { ...open, resize };
   }
 
   private renderError(parent: HTMLElement, rootPath: string): void {
@@ -374,7 +483,11 @@ export class BoardView extends ItemView {
   // on each read and on the debounced changed event, so an external edit lands
   // within two seconds. Returns whether anything moved, so the caller re-reads
   // the vault with the fresh paths before drawing, plus the notices for the
-  // locks it hit (open descendant, still-done ancestor).
+  // locks it hit (open descendant, still-done ancestor) and for any move the
+  // plan could not carry out (a colliding target, 008 S47, F068 K3): that one
+  // move is skipped and reported, the rest of the plan still runs, and
+  // `moved` counts only the ones that actually succeeded, so a plan that only
+  // ever fails does not send render() into an endless retry loop.
   private async reconcileDone(elements: BoardElement[]): Promise<{ moved: boolean; notices: string[] }> {
     this.reconciling = true;
     try {
@@ -382,16 +495,27 @@ export class BoardView extends ItemView {
         elements.map((el) => this.doneElement(el)),
         this.today,
       );
+      const notices = [...plan.notices];
+      let moved = false;
       for (const move of plan.moves) {
-        await moveElement(this.app, move.from, move.to, move.parent);
-        if (move.frontmatter) await writeFrontmatter(this.app, move.toNotePath, move.frontmatter);
+        try {
+          await moveElement(this.app, move.from, move.to, move.parent);
+          if (move.frontmatter) await writeFrontmatter(this.app, move.toNotePath, move.frontmatter);
+          moved = true;
+        } catch (err) {
+          notices.push(`Umzug übersprungen: ${move.from} → ${move.to} (${errorMessage(err)})`);
+        }
       }
-      return { moved: plan.moves.length > 0, notices: plan.notices };
+      return { moved, notices };
     } finally {
       this.reconciling = false;
     }
   }
 
+  // The Done reconciliation (planDone) keys "closed" off the status itself
+  // (F066): done/wont-do always close, an invalid element (status '') or an
+  // unknown status stays undefined and is left alone. guardMove and the drop
+  // path keep using doneStatuses(), which stays column-based (#479).
   private doneElement(el: BoardElement): DoneElement {
     const base = el.form === 'atomic' ? ATOMIC_BASE : matchRoot(el.paths.note, this.roots);
     return {
@@ -399,7 +523,15 @@ export class BoardView extends ItemView {
       notePath: el.paths.note,
       folderPath: el.paths.folder,
       base: base ?? '',
-      done: this.doneStatuses(el.project).has(el.status),
+      done: el.invalid
+        ? undefined
+        : statusClosure(
+            el.status,
+            resolveColumns(
+              this.plugin.settings,
+              el.project ? this.projects.find((p) => p.key === el.project) : undefined,
+            ),
+          ),
       completed: el.completed,
       type: el.type,
       title: el.title,
@@ -410,7 +542,7 @@ export class BoardView extends ItemView {
   private doneStatuses(project?: string): Set<string> {
     const settings = project ? this.projects.find((p) => p.key === project) : undefined;
     const columns = resolveColumns(this.plugin.settings, settings);
-    return new Set(columns.filter((c) => c.done).map((c) => c.status));
+    return columnDoneStatuses(columns);
   }
 
   private normalizeView(): void {
@@ -515,6 +647,7 @@ export class BoardView extends ItemView {
       this.today,
       (task) => this.doneStatuses(task.project).has(task.status),
       notifyPlanned,
+      (project) => this.projectSettings(project).levels,
     );
     const tiles: TodayTile[] = [
       ...overdue.map((el) => ({ element: el, kind: 'overdue' as const, date: el.due ?? '' })),
@@ -618,9 +751,11 @@ export class BoardView extends ItemView {
     const element = this.elementByPath.get(path);
     if (!element) return;
     const visible = this.isVisibleInCurrentView(element);
-    if (!visible || this.level !== 'task') {
+    // A Heute tile is always at its project's bottom level (today(), F072
+    // S22), so switching to its own type is switching to the bottom level.
+    if (!visible || this.level !== element.type) {
       this.view = visible ? this.view : element.project ?? VIEW_INTERNAL;
-      this.level = 'task';
+      this.level = element.type;
       await this.plugin.saveViewState(this.view, this.level);
       await this.render();
     }
@@ -634,10 +769,19 @@ export class BoardView extends ItemView {
     return el.project === this.view;
   }
 
-  // Entry point of the "Neue Aufgabe" command and toolbar button: a task at the
-  // first column's status, with the view's opening default (003 S13).
+  // Entry point of the "Neue Aufgabe" command and toolbar button: an element
+  // at the current project's bottom level (F072 S22), first column's status,
+  // with the view's opening default (003 S13).
   startCreate(): void {
-    this.openDraft('task', this.defaultStatus());
+    this.openDraft(this.draftLevel(), this.defaultStatus());
+  }
+
+  private draftLevel(): ElementType {
+    const project = this.currentProject();
+    const levels = project ? this.projectSettings(project.key).levels : resolveLevels(this.plugin.settings);
+    // Never empty: project.levels is only ever set non-empty (parseLevelList),
+    // and resolveLevels falls back to DEFAULT_LEVELS otherwise.
+    return bottomLevel(levels)!.key;
   }
 
   // Opens the enlarged card as a draft instead of a modal (addendum
@@ -668,13 +812,16 @@ export class BoardView extends ItemView {
   }
 
   // The draft's opening filing target follows the current view (addendum
-  // 2026-09-14): a project view files it under that project's root; "all" and
-  // "internal" leave it atomic without a project — the intern chip on the card is
-  // a display fallback (wissen #390), not a stored field (#477).
+  // 2026-09-14): a project view files it under that project's root — an
+  // empty parentLabel with the project key resolves to that root (F072 S21,
+  // resolveParentTarget), no longer a match against the project's display
+  // name; "all" and "internal" leave it atomic without a project — the
+  // intern chip on the card is a display fallback (wissen #390), not a
+  // stored field (#477).
   private draftDefaults(): { form: TaskForm; project?: string; parentLabel: string } {
     const project = this.currentProject();
     if (project) {
-      return { form: 'nested', project: project.key, parentLabel: `Deliverable: ${project.name}` };
+      return { form: 'nested', project: project.key, parentLabel: '' };
     }
     return { form: 'atomic', parentLabel: 'Atomar' };
   }
@@ -750,14 +897,18 @@ export class BoardView extends ItemView {
     const collapsed = this.plugin.isColumnCollapsed(this.view, column.status);
     const columnEl = parent.createDiv({
       cls: 'ktm-column',
-      attr: { 'data-status': column.status, 'data-collapsed': String(collapsed) },
+      attr: {
+        'data-status': column.status,
+        'data-collapsed': String(collapsed),
+        ...(column.unknown ? { 'data-unknown': 'true' } : {}),
+      },
     });
 
     const header = columnEl.createDiv({ cls: 'ktm-column-header' });
     const toggle = header.createSpan({ cls: 'ktm-column-toggle' });
     setIcon(toggle, collapsed ? 'chevron-right' : 'chevron-down');
     header.createSpan({ cls: 'ktm-column-title', text: column.name });
-    header.createSpan({ cls: 'ktm-column-count', text: String(column.cards.length) });
+    header.createSpan({ cls: 'ktm-column-count', text: String(column.total) });
 
     if (collapsed) {
       this.registerDomEvent(header, 'click', () => void this.toggleCollapsed(column.status));
@@ -765,12 +916,14 @@ export class BoardView extends ItemView {
     }
     this.registerDomEvent(toggle, 'click', () => void this.toggleCollapsed(column.status));
 
-    const add = header.createSpan({ cls: 'ktm-column-add', attr: { 'aria-label': 'Neue Karte' } });
-    setIcon(add, 'plus');
-    this.registerDomEvent(add, 'click', (ev) => {
-      ev.stopPropagation();
-      this.openDraft(this.level, column.status);
-    });
+    if (!column.unknown) {
+      const add = header.createSpan({ cls: 'ktm-column-add', attr: { 'aria-label': 'Neue Karte' } });
+      setIcon(add, 'plus');
+      this.registerDomEvent(add, 'click', (ev) => {
+        ev.stopPropagation();
+        this.openDraft(this.level, column.status);
+      });
+    }
 
     const body = columnEl.createDiv({ cls: 'ktm-column-body' });
     if (column.cards.length === 0) {
@@ -804,14 +957,9 @@ export class BoardView extends ItemView {
       },
     });
 
-    const titleRow = cardEl.createDiv({ cls: 'ktm-card-titlerow', attr: { title: card.title } });
-    if (card.ticket !== undefined && this.cardFields.includes('ticket')) {
-      titleRow.createSpan({ cls: 'ktm-card-ticket', text: `#${card.ticket}` });
-    }
-    titleRow.createSpan({ cls: 'ktm-card-title', text: card.title });
-
-    this.renderMeta(cardEl, card, done, today);
-    this.renderChips(cardEl, card);
+    const showProject = this.view === VIEW_ALL && this.cardFields.includes('project');
+    const ancestors = this.cardFields.includes('parents') ? this.ancestorChips(card) : [];
+    renderCardFace(cardEl, card, this.cardFields, today, done, showProject, ancestors);
   }
 
   private renderInvalidCard(parent: HTMLElement, card: BoardElement): void {
@@ -825,107 +973,35 @@ export class BoardView extends ItemView {
     meta.createSpan({ text: 'ungültig' });
   }
 
-  private renderMeta(parent: HTMLElement, card: BoardElement, done: boolean, today: string): void {
-    const priority = done ? undefined : priorityIcon(card.priority);
-    const showPlanned = this.cardFields.includes('planned') && !!card.planned;
-    const showDue = this.cardFields.includes('due') && !!card.due;
-    const showChecklist = this.cardFields.includes('checklist') && !!card.checklist;
-    const showPriority = this.cardFields.includes('priority') && !!priority;
-    if (!showPlanned && !showDue && !showChecklist && !showPriority) return;
-
-    const meta = parent.createDiv({ cls: 'ktm-card-meta' });
-
-    if (showPlanned && card.planned) {
-      const state = !done && dueState(card.planned, today) === 'today' ? 'today' : undefined;
-      this.metaItem(meta, 'ktm-card-planned', ICON_PLANNED, relativeDate(card.planned, today), {
-        'data-planned': state,
-      });
-    }
-    if (showDue && card.due) {
-      const state = done ? undefined : dueState(card.due, today);
-      this.metaItem(meta, 'ktm-card-due', ICON_DUE, relativeDate(card.due, today), {
-        'data-due': state,
-      });
-    }
-    if (showChecklist && card.checklist) {
-      this.metaItem(
-        meta,
-        'ktm-card-checklist',
-        ICON_CHECKLIST,
-        `${card.checklist.done}/${card.checklist.total}`,
-      );
-    }
-    if (showPriority && priority) {
-      const prioEl = meta.createSpan({
-        cls: 'ktm-card-meta-item ktm-card-priority',
-        attr: { 'data-priority': String(card.priority) },
-      });
-      setIcon(prioEl, priority);
-    }
-  }
-
-  private metaItem(
-    parent: HTMLElement,
-    cls: string,
-    icon: string,
-    label: string,
-    state?: Record<string, string | undefined>,
-  ): void {
-    const item = parent.createSpan({ cls: `ktm-card-meta-item ${cls}` });
-    if (state) {
-      for (const [name, value] of Object.entries(state)) {
-        if (value) item.setAttribute(name, value);
-      }
-    }
-    const iconEl = item.createSpan({ cls: 'ktm-card-meta-icon' });
-    setIcon(iconEl, icon);
-    item.createSpan({ text: label });
-  }
-
-  private renderChips(parent: HTMLElement, card: BoardElement): void {
-    const showProject = this.view === VIEW_ALL && this.cardFields.includes('project');
-    const showParents = this.cardFields.includes('parents');
-    const ancestors = showParents ? this.ancestorChips(card) : [];
-    const showTags = this.cardFields.includes('tags');
-    const tags = showTags ? visibleTags(card.tags) : { shown: [], rest: 0 };
-    if (!showProject && ancestors.length === 0 && tags.shown.length === 0) return;
-
-    const chips = parent.createDiv({ cls: 'ktm-card-chips' });
-    if (showProject) {
-      chips.createSpan({ cls: 'ktm-card-chip ktm-card-project', text: card.project || 'intern' });
-    }
-    for (const ancestor of ancestors) this.renderParentChip(chips, ancestor.icon, ancestor.title);
-    for (const tag of tags.shown) {
-      chips.createSpan({ cls: 'ktm-card-chip ktm-card-tag', text: stripHash(tag) });
-    }
-    if (tags.rest > 0) {
-      chips.createSpan({ cls: 'ktm-card-chip ktm-card-tagmore', text: `+${tags.rest}` });
-    }
-  }
-
   // One chip per level above the card's own on which it has an ancestor, top
   // to bottom (Epic before Feature before User Story, 009 addendum
   // 2026-09-20): icon from the card's own project's level list, so a chip
   // still resolves right in the "all" view where that can differ from the
   // levels shown. A missing ancestor on some intermediate level yields no
   // chip for it, not a gap that shifts the rest.
-  private ancestorChips(card: BoardElement): { icon: string; title: string }[] {
-    const levels = this.projectSettings(card.project).levels;
+  private ancestorChips(
+    card: BoardElement,
+  ): { icon: string; title: string; levelName: string; fullTitle: string }[] {
+    const settings = this.projectSettings(card.project);
+    const levels = settings.levels;
     const parentByType = new Map(card.parents.map((p) => [p.type, p]));
     const ownIndex = levels.findIndex((l) => l.key === card.type);
     const above = ownIndex === -1 ? levels.length : ownIndex;
-    const chips: { icon: string; title: string }[] = [];
+    const chips: { icon: string; title: string; levelName: string; fullTitle: string }[] = [];
     for (let i = 0; i < above; i++) {
-      const ancestor = parentByType.get(levels[i].key);
-      if (ancestor) chips.push({ icon: levels[i].icon, title: ancestor.short ?? ancestor.title });
+      const level = levels[i];
+      if (!level) continue;
+      const ancestor = parentByType.get(level.key);
+      if (ancestor) {
+        chips.push({
+          icon: level.icon,
+          title: settings.shortInChips ? (ancestor.short ?? ancestor.title) : ancestor.title,
+          levelName: level.name,
+          fullTitle: ancestor.title,
+        });
+      }
     }
     return chips;
-  }
-
-  private renderParentChip(parent: HTMLElement, icon: string, title: string): void {
-    const chip = parent.createSpan({ cls: 'ktm-card-chip ktm-card-parent' });
-    setIcon(chip, icon);
-    chip.createSpan({ text: title });
   }
 
   async moveFocusedCard(direction: MoveDirection): Promise<void> {
@@ -952,9 +1028,9 @@ export class BoardView extends ItemView {
         return;
       }
     }
-    await writeFrontmatter(this.app, path, move.change);
-    await this.render();
-    this.focusCard(path);
+    const change = this.withCanonicalStatus(element, move.change);
+    const ok = await this.persist('Verschieben', path, () => writeFrontmatter(this.app, path, change));
+    if (ok) this.focusCard(path);
   }
 
   private focusCard(path: string): void {
@@ -966,6 +1042,7 @@ export class BoardView extends ItemView {
     if (ev.button !== 0) return;
     const card = ev.target instanceof Element ? ev.target.closest('.ktm-card') : null;
     if (!(card instanceof HTMLElement) || !card.closest('.ktm-columns')) return;
+    if (card.closest('.ktm-column[data-unknown="true"]')) return;
     const { cardId, status } = card.dataset;
     if (!cardId || status === undefined) return;
     const rect = card.getBoundingClientRect();
@@ -1112,6 +1189,7 @@ export class BoardView extends ItemView {
 
     const board = buildBoard([...this.elementByPath.values()], this.filter(), this.columns, {
       level: this.level,
+      doneLimit: this.doneLimit,
     });
     const column = board.columns.find((c) => c.status === toStatus);
     if (!column) return;
@@ -1120,16 +1198,19 @@ export class BoardView extends ItemView {
       .map((c) => ({ path: c.paths.note, order: c.order }));
 
     const changes = reorderColumn(cards, path, insertIndex);
-    for (const change of changes) {
-      const frontmatter: FrontmatterChange =
-        change.path === path
-          ? { ...statusChange, order: String(change.order) }
-          : { order: String(change.order) };
-      await writeFrontmatter(this.app, change.path, frontmatter);
-    }
+    let failedPath = path;
+    const ok = await this.persist('Verschieben', () => failedPath, async () => {
+      for (const change of changes) {
+        failedPath = change.path;
+        const frontmatter: FrontmatterChange =
+          change.path === path
+            ? this.withCanonicalStatus(element, { ...statusChange, order: String(change.order) })
+            : { order: String(change.order) };
+        await writeFrontmatter(this.app, change.path, frontmatter);
+      }
+    });
 
-    await this.render();
-    this.focusCard(path);
+    if (ok) this.focusCard(path);
   }
 
   private endDrag(): void {
@@ -1187,6 +1268,7 @@ export class BoardView extends ItemView {
       {
         close: () => void this.closeDetail(),
         openNote: (path) => void this.openNote(path),
+        revealFolder: (path) => void this.revealFolder(path),
         openChild: (el) => void this.openDetail(el),
         openLink: (target) => void this.openLink(target, element.paths.note),
         createLinkNote: (kind, title) => this.createLinkNote(element, kind, title),
@@ -1254,6 +1336,10 @@ export class BoardView extends ItemView {
       if (done) return;
       done = true;
       cardEl.removeClass('ktm-expanding');
+      // A backgrounded window throttles requestAnimationFrame (#705); the
+      // timeout path below reaches here without it ever having applied
+      // finalWidth, so the card would freeze at the origin's column width.
+      cardEl.style.width = `${finalWidth}px`;
       this.finalizeOpen(cardEl);
     };
     this.registerDomEvent(cardEl, 'transitionend', finish);
@@ -1280,14 +1366,16 @@ export class BoardView extends ItemView {
     cardEl.setAttribute('data-expanded', 'true');
   }
 
-  // Board minus margins, capped at two thirds of the board and three column
-  // widths, floored at 720 px — the detail width from DESIGN.md. A stacked
-  // draft (F053) is 80 px narrower than this width.
+  // Board minus margins, capped at two thirds of the board and a multiple of
+  // the column width (Einstellung expandedWidthFactor, Standard 3), floored
+  // at 720 px — the detail width from DESIGN.md. A stacked draft (F053) is
+  // 80 px narrower than this width.
   private expandedWidth(boardEl: HTMLElement, stackedOver = false): number {
     const boardWidth = boardEl.clientWidth;
     const openColumn = boardEl.querySelector<HTMLElement>('.ktm-column:not([data-collapsed="true"])');
     const columnWidth = openColumn ? openColumn.getBoundingClientRect().width : EXPANDED_MIN_WIDTH;
-    let width = Math.min(3 * columnWidth, Math.floor((boardWidth * 2) / 3));
+    const factor = this.plugin.settings.expandedWidthFactor ?? 3;
+    let width = Math.min(factor * columnWidth, Math.floor((boardWidth * 2) / 3));
     width = Math.max(EXPANDED_MIN_WIDTH, width);
     width = Math.min(width, boardWidth - EXPANDED_MARGIN);
     return stackedOver ? width - STACK_WIDTH_INSET : width;
@@ -1337,115 +1425,182 @@ export class BoardView extends ItemView {
   private async closeDetail(): Promise<void> {
     const open = this.detail;
     if (!open) return;
-    this.detail = undefined;
-    open.resize.disconnect();
-    const base = this.stackedBase;
-    this.stackedBase = undefined;
 
     if (open.draft) {
-      const createdPath = await this.writeDraft(open.detail);
-      this.removeChild(open.detail);
-      open.cardEl.remove();
+      await this.closeDraft(open);
+      return;
+    }
 
-      if (!base) {
-        open.coverEl.remove();
-        if (createdPath) await this.render();
-        return;
-      }
-
-      if (!createdPath) {
-        // K4: an empty title creates nothing; the card beneath becomes
-        // operable again without a render (DESIGN.md Gestapelter Entwurf).
-        base.cardEl.removeAttribute('data-stacked');
-        this.detail = base;
-        return;
-      }
-
-      // K1-K3: created. On a level above the source it pulls under the
-      // new element (planRefile/moveElement); then pop the stack, render()
-      // and reopen the card beneath fresh at the new path — it must
-      // not survive, render() tears down discardDetail() anyway (#529).
-      // moveElement itself under reconciling=true, otherwise the
-      // rename event schedules an unguided reconcile render (250ms debounce)
-      // that fires after the reopen below and tears it down again.
-      this.reconciling = true;
-      let sourcePath: string;
-      try {
-        sourcePath = open.stackedFrom
-          ? await this.applyStackedRefile(open.stackedFrom, createdPath)
-          : base.path;
-      } finally {
-        this.reconciling = false;
-      }
-      this.teardownEntry(base);
-      base.cardEl.remove();
-      base.coverEl.remove();
-      await this.render();
-      const fresh = this.elementByPath.get(sourcePath);
-      if (fresh) await this.openDetail(fresh);
+    // The note may have been moved or deleted from outside while the card was
+    // open (008 S45, F068 K2): checked before this.detail is touched, so a
+    // missing note leaves the card, its cover and its unsaved edits exactly as
+    // they were — nothing is written, nothing is redrawn.
+    if (!this.app.vault.getFileByPath(open.path)) {
+      this.failureNotice('Schließen', open.path, 'Notiz wurde verschoben oder gelöscht');
       return;
     }
 
     const changes = open.detail.changes();
     const element = this.elementByPath.get(open.path);
-    this.removeChild(open.detail);
-    open.coverEl.remove();
-    open.cardEl.remove();
-    if (!changes) return;
+    if (!changes) {
+      this.detail = undefined;
+      open.resize.disconnect();
+      this.removeChild(open.detail);
+      open.coverEl.remove();
+      open.cardEl.remove();
+      return;
+    }
 
-    this.reconciling = true;
-    try {
-      let notePath = open.path;
-      const frontmatter = { ...changes.frontmatter };
-      if (changes.refile && element) {
-        const plan = this.resolveRefile(element, changes.refile);
-        if (plan.notice) new Notice(plan.notice, NOTICE_DURATION);
-        Object.assign(frontmatter, plan.frontmatter);
-        if (plan.move) {
-          await moveElement(this.app, plan.move.from, plan.move.to, plan.move.parent);
-          // A folder move carries its `_`-note along under its old file name;
-          // a title change needs a second, separate rename of just that note
-          // (adapter building block: "in two renameFile steps").
-          if (element.form === 'nested') {
-            const interim = `${plan.move.to}/${baseName(element.paths.note)}`;
-            if (interim !== plan.notePath) {
-              await moveElement(this.app, interim, plan.notePath, plan.move.to);
+    // Resolved before anything is torn down (F071 K4, wissen #584): a
+    // project switch into a root the vault does not have must write
+    // nothing and leave the card exactly as it is, not run through
+    // persist()/render() at all.
+    let refilePlan: RefilePlan | undefined;
+    if (changes.refile && element) {
+      refilePlan = this.resolveRefile(element, changes.refile);
+      if (refilePlan.blocked) {
+        new Notice(refilePlan.blocked, NOTICE_DURATION);
+        this.reattachDetail(open);
+        return;
+      }
+    }
+
+    this.detail = undefined;
+    open.resize.disconnect();
+
+    const ok = await this.persist('Speichern', open.path, async () => {
+      this.reconciling = true;
+      try {
+        let notePath = open.path;
+        let frontmatter = { ...changes.frontmatter };
+        if (refilePlan && element) {
+          const plan = refilePlan;
+          if (plan.notice) new Notice(plan.notice, NOTICE_DURATION);
+          Object.assign(frontmatter, plan.frontmatter);
+          if (plan.move) {
+            await moveElement(this.app, plan.move.from, plan.move.to, plan.move.parent);
+            // A folder move carries its `_`-note along under its old file name;
+            // a title change needs a second, separate rename of just that note
+            // (adapter building block: "in two renameFile steps").
+            if (element.form === 'nested') {
+              const interim = `${plan.move.to}/${baseName(element.paths.note)}`;
+              if (interim !== plan.notePath) {
+                await moveElement(this.app, interim, plan.notePath, plan.move.to);
+              }
+            }
+          }
+          notePath = plan.notePath;
+        }
+        if (element) frontmatter = this.withCanonicalStatus(element, frontmatter);
+        if (Object.keys(frontmatter).length > 0) {
+          await writeFrontmatter(this.app, notePath, frontmatter);
+        }
+        if (changes.body !== undefined) {
+          await writeBody(this.app, notePath, changes.body);
+        }
+        // Child detachments (F051 K6): only after the refile of the open
+        // element, reconcile was blocked the whole time the detail was
+        // open anyway (#130) — each detached child pulls one level higher,
+        // into the folder of the (unchanged) parent of the open element,
+        // or to its project root.
+        if (changes.detachedChildren && element) {
+          const targetFolder = this.detachFolderFor(element);
+          if (targetFolder) {
+            for (const childPath of changes.detachedChildren) {
+              const child = this.elementByPath.get(childPath);
+              if (!child?.paths.folder) continue;
+              const plan = planRefile(
+                { form: child.form, type: child.type, notePath: child.paths.note, folderPath: child.paths.folder },
+                { parentFolder: targetFolder },
+                this.childrenOf(child),
+                this.siblingNames(targetFolder),
+              );
+              if (plan.move) await moveElement(this.app, plan.move.from, plan.move.to, plan.move.parent);
             }
           }
         }
-        notePath = plan.notePath;
+      } finally {
+        this.reconciling = false;
       }
-      if (Object.keys(frontmatter).length > 0) {
-        await writeFrontmatter(this.app, notePath, frontmatter);
+    });
+
+    if (ok) {
+      this.removeChild(open.detail);
+      open.coverEl.remove();
+      open.cardEl.remove();
+    } else {
+      // S46/K1: the write failed partway; the card stays open with its
+      // unsaved draft, the board underneath was already redrawn by persist().
+      this.reattachDetail(open);
+    }
+  }
+
+  // The draft-closing half of closeDetail: an empty title discards silently
+  // (S11/K3, unrelated to write errors), a real write failure (F068)
+  // leaves the draft open with a notice instead of tearing it down, and a
+  // successful create proceeds exactly as before (F053 stacking).
+  private async closeDraft(open: OpenDetail): Promise<void> {
+    this.detail = undefined;
+    open.resize.disconnect();
+    const base = this.stackedBase;
+    this.stackedBase = undefined;
+
+    const result = await this.writeDraft(open.detail);
+
+    if (!result) {
+      this.removeChild(open.detail);
+      open.cardEl.remove();
+      if (!base) {
+        open.coverEl.remove();
+        return;
       }
-      if (changes.body !== undefined) {
-        await writeBody(this.app, notePath, changes.body);
-      }
-      // Child detachments (F051 K6): only after the refile of the open
-      // element, reconcile was blocked the whole time the detail was
-      // open anyway (#130) — each detached child pulls one level higher,
-      // into the folder of the (unchanged) parent of the open element,
-      // or to its project root.
-      if (changes.detachedChildren && element) {
-        const targetFolder = this.detachFolderFor(element);
-        if (targetFolder) {
-          for (const childPath of changes.detachedChildren) {
-            const child = this.elementByPath.get(childPath);
-            if (!child?.paths.folder) continue;
-            const plan = planRefile(
-              { form: child.form, type: child.type, notePath: child.paths.note, folderPath: child.paths.folder },
-              { parentFolder: targetFolder },
-              this.childrenOf(child),
-              this.siblingNames(targetFolder),
-            );
-            if (plan.move) await moveElement(this.app, plan.move.from, plan.move.to, plan.move.parent);
-          }
-        }
-      }
+      // K4: an empty title creates nothing; the card beneath becomes
+      // operable again without a render (DESIGN.md Gestapelter Entwurf).
+      base.cardEl.removeAttribute('data-stacked');
+      this.detail = base;
+      return;
+    }
+
+    if (!result.ok) {
+      this.failureNotice('Anlegen', result.path, result.message);
+      await this.render();
+      this.reattachDetail(open, base);
+      return;
+    }
+    const createdPath = result.path;
+
+    if (!base) {
+      this.removeChild(open.detail);
+      open.cardEl.remove();
+      open.coverEl.remove();
+      await this.render();
+      return;
+    }
+
+    // K1-K3: created. On a level above the source it pulls under the
+    // new element (planRefile/moveElement); then pop the stack, render()
+    // and reopen the card beneath fresh at the new path — it must
+    // not survive, render() tears down discardDetail() anyway (#529).
+    // moveElement itself under reconciling=true, otherwise the
+    // rename event schedules an unguided reconcile render (250ms debounce)
+    // that fires after the reopen below and tears it down again.
+    this.reconciling = true;
+    let sourcePath: string;
+    try {
+      sourcePath = open.stackedFrom
+        ? await this.applyStackedRefile(open.stackedFrom, createdPath)
+        : base.path;
     } finally {
       this.reconciling = false;
     }
+    this.removeChild(open.detail);
+    open.cardEl.remove();
+    this.teardownEntry(base);
+    base.cardEl.remove();
+    base.coverEl.remove();
     await this.render();
+    const fresh = this.elementByPath.get(sourcePath);
+    if (fresh) await this.openDetail(fresh);
   }
 
   // The target folder of a child detachment: the folder of its own parent,
@@ -1453,24 +1608,35 @@ export class BoardView extends ItemView {
   private detachFolderFor(element: BoardElement): string | undefined {
     const parent = element.parents[0];
     if (parent) return this.elementByPath.get(parent.note)?.paths.folder;
-    return this.projectRootForElement(element);
+    return projectRootForElement(element, this.projects);
   }
 
   // Builds the draft's note from its final title/status/type and the form
   // chosen via the folder field or the link-plus (draftPlacement) and
   // writes it; an empty title discards the draft without vault access
-  // (S11/K3). draftTarget() reports the final values rather than a diff, since
-  // status often stays at its opening default and a diff against that default
-  // would omit it even though the new note still needs it; the optional fields
-  // (priority/planned/due/tags) and a typed description genuinely are
-  // "only if set" (008), so those still come from changes(). Returns the
-  // created note's path (F053: closing a stacked draft needs it to refile
-  // the card underneath), or undefined when nothing was created (S11/K3).
-  private async writeDraft(detail: CardDetail): Promise<string | undefined> {
+  // (S11/K3), reported as `undefined`, distinct from a real write failure
+  // (F068), reported as `{ok: false}` with the intended path and the error's
+  // message so closeDraft can leave the draft open with a notice instead of
+  // tearing it down. draftTarget() reports the final values rather than a
+  // diff, since status often stays at its opening default and a diff
+  // against that default would omit it even though the new note still needs
+  // it; the optional fields (priority/planned/due/tags) and a typed
+  // description genuinely are "only if set" (008), so those still come from
+  // changes(). On success, the path doubles as the created note's path
+  // (F053: closing a stacked draft needs it to refile the card underneath).
+  private async writeDraft(
+    detail: CardDetail,
+  ): Promise<{ path: string; ok: true } | { path: string; ok: false; message: string } | undefined> {
     const target = detail.draftTarget();
     if (!target) return undefined;
     const placement = this.draftPlacement(target);
     if (!placement) return undefined;
+    // A root the vault does not have (006 S43, F071 K5): reported before
+    // createNote ever runs, same shape as a real write failure so
+    // closeDraft leaves the draft open with the notice.
+    if (placement.missingRoot) {
+      return { path: placement.path, ok: false, message: placement.missingRoot };
+    }
 
     const content = noteContent({
       type: target.type,
@@ -1492,149 +1658,43 @@ export class BoardView extends ItemView {
       if (changes?.body !== undefined) {
         await writeBody(this.app, placement.path, changes.body);
       }
+      return { path: placement.path, ok: true };
+    } catch (err) {
+      return { path: placement.path, ok: false, message: errorMessage(err) };
     } finally {
       this.reconciling = false;
     }
-    return placement.path;
   }
 
-  // Places the draft according to its chosen form (008 S21-S23, F055):
-  // Atomic -> atomicNotePath, project only if the view has one set
-  // (K1); an own path chosen via the folder field -> nestedPaths there,
-  // project as its own field, no parent (K3, wissen #477 - the element
-  // leaves the root); otherwise default filing: parentLabel resolves the
-  // ancestor once (wissen #566) and returns both its folder (where
-  // the note is created) and the ancestor itself for the parent wikilink (K2) -
-  // without an ancestor it is the project root, unchanged as before.
-  private draftPlacement(
-    target: DraftTarget,
-  ): { path: string; project?: string; parent?: string } | undefined {
-    if (target.atomic) {
-      return { path: atomicNotePath(target.title, this.today), project: target.project };
-    }
-    if (target.ownFolder) {
-      const { note } = nestedPaths(target.ownFolder, target.title, this.today);
-      return { path: note, project: target.project };
-    }
-    const resolved = this.resolveParentTarget(target.parentLabel, { project: target.project });
-    if (!resolved.folder) return undefined;
-    const { note } = nestedPaths(resolved.folder, target.title, this.today);
-    const parent = resolved.ancestor ? this.wikilinkTo(resolved.ancestor.paths.note, note) : undefined;
-    return { path: note, parent };
-  }
-
-  // Turns the filing edits (title, project, level, the parentLabel driven
-  // via the link list, the folder field) into a plan:
-  // project on a filed element moves it to the root of the
-  // new project — a parentLabel changed in the same edit is
-  // overridden by that, because it named a container of the old project —,
-  // parentLabel alone moves within the current project, an empty
-  // parentLabel to its own project root (F051 K5/K6). Project on an
-  // atomic task is only a frontmatter field (008); filing an atomic task via
-  // a cross stays "ausserhalb" (F034/F051 "ausserhalb"). The
-  // folder field (F054) takes precedence: a chosen folder moves there and
-  // writes project/parent as their own frontmatter fields, because the element
-  // then lies "ausserhalb" every root (008, wissen #477); a parent change
-  // on an element with its own folder, by contrast, does not move it (S34/K2),
-  // but only rewrites `parent` again.
-  private resolveRefile(element: BoardElement, refile: RefileRequest) {
-    const target: { title?: string; type?: ElementType; project?: string; parentFolder?: string } = {};
-    if (refile.title) target.title = refile.title;
-    if (refile.type) target.type = refile.type;
-    let extra: FrontmatterChange = {};
-
-    if (element.form === 'atomic') {
-      if (refile.project !== undefined) target.project = refile.project;
-    } else if (refile.folder !== undefined) {
-      extra = this.resolveFolderRefile(element, refile.folder, target);
-    } else if (refile.project !== undefined && refile.project !== (element.project ?? '')) {
-      const project = this.projects.find((p) => p.key === refile.project);
-      if (project) target.parentFolder = project.root.replace(/\/+$/, '');
-    } else if (refile.parentLabel !== undefined) {
-      const resolved = this.resolveParentTarget(refile.parentLabel, { element });
-      if (element.ownFolder) {
-        extra.parent = resolved.ancestor
-          ? this.wikilinkTo(resolved.ancestor.paths.note, element.paths.note)
-          : null;
-      } else {
-        target.parentFolder = resolved.folder;
-      }
-    }
-
-    const taken = target.parentFolder ? this.siblingNames(target.parentFolder) : [];
-    const plan = planRefile(
-      {
-        form: element.form,
-        type: element.type,
-        notePath: element.paths.note,
-        folderPath: element.paths.folder,
-      },
-      target,
-      this.childrenOf(element),
-      taken,
-    );
-    Object.assign(plan.frontmatter, extra);
-    return plan;
-  }
-
-  // Folder-field branch of resolveRefile (F054, 008 S35-S37): a chosen
-  // folder (`folder` a path) becomes the new parent folder, project and
-  // parent are written as their own fields, because the element thereby
-  // steps outside every root and they would otherwise be missing on
-  // the next read (wissen #477). "Default filing" (`folder === null`) pulls
-  // back into the folder of the current parent or the project root and
-  // deletes both fields again, because the folder hierarchy then carries them again.
-  private resolveFolderRefile(
-    element: BoardElement,
-    folder: string | null,
-    target: { parentFolder?: string },
-  ): FrontmatterChange {
-    if (folder === null) {
-      const parent = element.parents[0];
-      const parentFolder = parent ? this.elementByPath.get(parent.note)?.paths.folder : undefined;
-      target.parentFolder =
-        parentFolder ?? this.projects.find((p) => p.key === element.project)?.root.replace(/\/+$/, '');
-      return { project: null, parent: null };
-    }
-    target.parentFolder = folder;
-    const parent = element.parents[0];
+  // The vault access the core placement decision (planDraftPlacement,
+  // planFiling, resolveParentTarget — core/refile.ts) needs, built from the
+  // board's already-loaded state so the decision itself stays plain
+  // TypeScript and provable without Obsidian (F072 S23).
+  private refileEnv(): RefileEnv {
     return {
-      project: element.project ?? null,
-      parent: parent ? this.wikilinkTo(parent.note, element.paths.note) : null,
+      projects: this.projects,
+      elements: [...this.elementByPath.values()],
+      levelsFor: (project) => this.projectSettings(project).levels,
+      rootExists: (root) => folderExists(this.app, root),
+      siblings: (folder) => this.siblingNames(folder),
+      linkTo: (target, source) => this.wikilinkTo(target, source),
+      childrenOf: (element) => this.childrenOf(element),
     };
   }
 
-  // Resolves a parentLabel to both the ancestor's folder (a standard move)
-  // and the ancestor element itself (writing `parent` on an element with an
-  // own folder, which does not move — F054/S34): "Deliverable: X" is the
-  // project's root, "Epic: X" / "Feature: X" the matching element, '' the
-  // project root — of the given element's physical placement (wissen #540:
-  // via the folder, not an overridable `project` field) for an
-  // existing element, or of the given project key for a not-yet-filed
-  // draft. "Atomic" resolves to nothing — de-embedding a nested element
-  // into an atomic note is not part of this package (F034 "ausserhalb").
-  private resolveParentTarget(
-    label: string,
-    context: { element?: BoardElement; project?: string } = {},
-  ): { folder?: string; ancestor?: BoardElement } {
-    if (label === '') {
-      if (context.element) return { folder: this.projectRootForElement(context.element) };
-      const project = this.projects.find((p) => p.key === context.project);
-      return { folder: project?.root.replace(/\/+$/, '') };
-    }
-    const deliverable = /^Deliverable: (.+)$/.exec(label);
-    if (deliverable) {
-      const project = this.projects.find((p) => p.name === deliverable[1]);
-      return { folder: project?.root.replace(/\/+$/, '') };
-    }
-    const named = /^(?:Epic|Feature): (.+)$/.exec(label);
-    if (!named) return {};
-    for (const el of this.elementByPath.values()) {
-      if ((el.type === 'epic' || el.type === 'feature') && el.title === named[1] && el.paths.folder) {
-        return { folder: el.paths.folder, ancestor: el };
-      }
-    }
-    return {};
+  // Places the draft according to its chosen form (008 S21-S23, F055,
+  // core/refile.ts#planDraftPlacement).
+  private draftPlacement(
+    target: DraftTarget,
+  ): { path: string; project?: string; parent?: string; missingRoot?: string } | undefined {
+    return planDraftPlacement(target, this.refileEnv(), this.today);
+  }
+
+  // Turns the filing edits (title, project, level, the parentLabel driven
+  // via the link list, the folder field) into a plan
+  // (core/refile.ts#planFiling, F034/F051/F054/F072).
+  private resolveRefile(element: BoardElement, refile: RefileRequest): RefilePlan {
+    return planFiling(element, refile, this.refileEnv());
   }
 
   // A scalar `parent` value (008 S29, wissen #500: bewusst quotiert statt
@@ -1647,22 +1707,6 @@ export class BoardView extends ItemView {
       ? this.app.metadataCache.fileToLinktext(file, sourceNotePath, true)
       : baseName(targetNotePath).replace(/\.md$/, '');
     return JSON.stringify(`[[${linktext}]]`);
-  }
-
-  // The root folder an existing element physically sits under: the longest
-  // configured project root that prefixes its own folder. Deliberately not
-  // `element.project`, which a note may override (#540).
-  private projectRootForElement(element: BoardElement): string | undefined {
-    const folder = element.paths.folder;
-    if (!folder) return undefined;
-    let best: string | undefined;
-    for (const p of this.projects) {
-      const root = p.root.replace(/\/+$/, '');
-      if ((folder === root || folder.startsWith(`${root}/`)) && (!best || root.length > best.length)) {
-        best = root;
-      }
-    }
-    return best;
   }
 
   private siblingNames(folder: string): string[] {
@@ -1794,6 +1838,20 @@ export class BoardView extends ItemView {
     if (file instanceof TFile) await this.app.workspace.getLeaf('tab').openFile(file);
   }
 
+  // Klick auf den Ordner-Pfad (002 S4/K3, 008 S42): zeigt den Ordner im
+  // Dateibaum, ohne den Picker zu oeffnen, den ein Klick auf den Rest des
+  // Feldes startet (F054).
+  private async revealFolder(path: string): Promise<void> {
+    await this.closeDetail();
+    const folder = this.app.vault.getAbstractFileByPath(path);
+    if (!folder) return;
+    const explorer = (this.app as DesktopApp).internalPlugins.getPluginById('file-explorer');
+    explorer?.instance?.revealInFolder?.(folder);
+  }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function baseName(path: string): string {
@@ -1804,10 +1862,6 @@ function baseName(path: string): string {
 function dirOf(path: string): string {
   const cut = path.lastIndexOf('/');
   return cut === -1 ? '' : path.slice(0, cut);
-}
-
-function stripHash(tag: string): string {
-  return tag.startsWith('#') ? tag.slice(1) : tag;
 }
 
 // The level switcher's segment label (009 addendum 2026-09-20): the level

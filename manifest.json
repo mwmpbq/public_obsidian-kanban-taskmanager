@@ -4,5 +4,7 @@
   "version": "0.0.1",
   "minAppVersion": "1.13.0",
   "description": "Brings all tasks of a vault together in a switchable Kanban view.",
+  "author": "mwmpbq",
+  "authorUrl": "https://github.com/mwmpbq",
   "isDesktopOnly": true
 }

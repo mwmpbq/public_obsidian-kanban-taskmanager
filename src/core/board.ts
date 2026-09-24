@@ -1,5 +1,5 @@
 import type { BoardElement, Checklist, ElementType } from './model';
-import type { Column, Level } from './settings';
+import { doneStatuses, type Column, type Level } from './settings';
 
 export type BoardView =
   | { kind: 'all' }
@@ -20,8 +20,10 @@ export interface LevelContext {
 
 export interface BoardOptions {
   level?: ElementType;
+  bottomLevel?: ElementType;
   epic?: string;
   levelContext?: LevelContext;
+  doneLimit?: number;
 }
 
 /**
@@ -70,6 +72,9 @@ function ownRank(el: BoardElement, ctx: LevelContext): number | undefined {
 
 export interface BoardColumn extends Column {
   cards: BoardElement[];
+  total: number;
+  /** Appended for an open status unknown to `columns`, `all` view only (CONVENTIONS.md). */
+  unknown?: boolean;
 }
 
 export interface Board {
@@ -78,17 +83,33 @@ export interface Board {
 }
 
 /**
- * Groups elements of the requested level (default `task`) into the resolved
- * columns by status slug. The view narrows the set: `internal` keeps only cards
- * without a project, `project` only that project's cards. An `epic` scope keeps
- * only cards below that epic, across feature folders. A valid card whose status
- * matches no column gets no card and no extra column; instead it is named in a
- * notice. Invalid cards carry no status and stand last in the first column.
- * Within each column cards sort by priority, then due date (missing last), then
- * title. On a container level (feature, epic) each card's `checklist` is
- * replaced by the progress of its direct children: how many of them sit in a
- * done column out of the total. The container's own status is never derived
- * from its children.
+ * Groups elements of the requested level (default `bottomLevel`, itself
+ * defaulting to `task`) into the resolved columns by status slug. The view
+ * narrows the set: `internal` keeps only cards without a project, `project`
+ * only that project's cards. An `epic` scope keeps only cards below that
+ * epic, across feature folders. A valid card whose status matches no column
+ * gets a per-card notice for an open status (see below for where it also
+ * gets a column), a closed one (`done`/`wont-do`, 008 addendum 2026-09-22,
+ * F070) is only counted into one summary notice for the whole board. Invalid cards
+ * carry no status and stand last in the first column. Within each column
+ * cards sort by priority, then due date (missing last), then title. On a
+ * container level, i.e. any level above `bottomLevel` (F073, 009 S22), each
+ * card's `checklist` is replaced by the progress of its direct children: how
+ * many of them sit in a done column out of the total. The container's own
+ * status is never derived from its children.
+ *
+ * A valid card with an open status that matches no column still gets its
+ * per-card notice everywhere. In the `all` view it also lands in a
+ * read-only column appended for that status value, named after it; one such
+ * column per distinct value, alphabetically after the configured columns
+ * (CONVENTIONS.md, decided 2026-09-09, reaffirmed 2026-09-23). In `project`
+ * and `internal` views it gets no card and no extra column, as before.
+ *
+ * With `doneLimit` greater than 0, the column whose status slug is `done`
+ * keeps only the `doneLimit` valid cards with the most recent `completed`
+ * (missing `completed` counts as oldest), sorted descending by it; `total`
+ * still counts every card the column would otherwise hold, invalid cards are
+ * never trimmed, and every other column is unaffected (001 S13, 006 S32-S34).
  */
 export function buildBoard(
   elements: BoardElement[],
@@ -96,7 +117,8 @@ export function buildBoard(
   columns: Column[],
   options: BoardOptions = {},
 ): Board {
-  const level = options.level ?? 'task';
+  const bottomLevel = options.bottomLevel ?? 'task';
+  const level = options.level ?? bottomLevel;
   let visible = elements.filter((c) => c.type === level);
 
   const ctx = options.levelContext;
@@ -121,20 +143,25 @@ export function buildBoard(
     );
   }
 
-  if (level !== 'task') {
-    const doneStatuses = new Set(columns.filter((c) => c.done).map((c) => c.status));
+  if (level !== bottomLevel) {
+    const doneSet = doneStatuses(columns);
     visible = visible.map((card) => ({
       ...card,
-      checklist: childProgress(card, elements, doneStatuses),
+      checklist: childProgress(card, elements, doneSet),
     }));
   }
 
-  const result: BoardColumn[] = columns.map((c) => ({ ...c, cards: [] }));
+  const result: BoardColumn[] = columns.map((c) => ({ ...c, cards: [], total: 0 }));
   const byStatus = new Map<string, BoardColumn>();
-  for (const col of result) byStatus.set(col.status, col);
+  for (const col of result) {
+    byStatus.set(col.status, col);
+    for (const alias of col.aliases ?? []) byStatus.set(alias, col);
+  }
 
   const notices: string[] = [];
   const invalidCards: BoardElement[] = [];
+  const unknownCards = new Map<string, BoardElement[]>();
+  let closedWithoutColumn = 0;
 
   for (const card of visible) {
     if (card.invalid) {
@@ -144,11 +171,22 @@ export function buildBoard(
     if (card.notice) notices.push(card.notice);
     const col = byStatus.get(card.status);
     if (!col) {
-      notices.push(unknownStatusNotice(card));
+      if (card.status === 'done' || card.status === 'wont-do') {
+        closedWithoutColumn++;
+      } else {
+        notices.push(unknownStatusNotice(card));
+        if (view.kind === 'all') {
+          const list = unknownCards.get(card.status) ?? [];
+          list.push(card);
+          unknownCards.set(card.status, list);
+        }
+      }
       continue;
     }
     col.cards.push(card);
   }
+
+  if (closedWithoutColumn > 0) notices.push(closedWithoutColumnNotice(closedWithoutColumn));
 
   for (const col of result) col.cards.sort(compareCards);
 
@@ -157,7 +195,34 @@ export function buildBoard(
     result[0].cards.push(...invalidCards);
   }
 
+  for (const [status, list] of [...unknownCards.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    result.push({ status, name: status, done: false, unknown: true, cards: list.sort(compareCards), total: 0 });
+  }
+
+  for (const col of result) col.total = col.cards.length;
+
+  if (options.doneLimit && options.doneLimit > 0) {
+    const doneCol = result.find((c) => c.status === 'done');
+    if (doneCol) doneCol.cards = trimDone(doneCol.cards, options.doneLimit);
+  }
+
   return { columns: result, notices };
+}
+
+// Keeps invalid cards untouched and limits the rest to the `limit` most
+// recently completed, newest first (buildBoard's doneLimit).
+function trimDone(cards: BoardElement[], limit: number): BoardElement[] {
+  const invalid = cards.filter((c) => c.invalid);
+  const valid = cards.filter((c) => !c.invalid);
+  const kept = [...valid].sort(compareCompletedDesc).slice(0, limit);
+  return [...kept, ...invalid];
+}
+
+function compareCompletedDesc(a: BoardElement, b: BoardElement): number {
+  if (a.completed === b.completed) return a.title.localeCompare(b.title);
+  if (!a.completed) return 1;
+  if (!b.completed) return -1;
+  return a.completed < b.completed ? 1 : -1;
 }
 
 const LEVEL_RANK: Record<ElementType, number> = { epic: 0, feature: 1, task: 2 };
@@ -182,20 +247,28 @@ export function canChangeLevel(
 function childProgress(
   parent: BoardElement,
   elements: BoardElement[],
-  doneStatuses: Set<string>,
+  doneSet: Set<string>,
 ): Checklist | undefined {
   let done = 0;
   let total = 0;
   for (const el of elements) {
     if (el.parents[0]?.note !== parent.paths.note) continue;
     total++;
-    if (doneStatuses.has(el.status)) done++;
+    if (doneSet.has(el.status)) done++;
   }
   return total === 0 ? undefined : { done, total };
 }
 
 function unknownStatusNotice(card: BoardElement): string {
   return `Unbekannter Status „${card.status}“: ${card.paths.note} erscheint auf keiner Spalte.`;
+}
+
+// A done/wont-do card whose column was removed still counts as abgeschlossen
+// (008, addendum 2026-09-22, F070 S37): it gets no per-card notice, only a
+// single summary so removing the column stays quiet at the individual level.
+function closedWithoutColumnNotice(count: number): string {
+  const noun = count === 1 ? 'abgeschlossene Aufgabe' : 'abgeschlossene Aufgaben';
+  return `${count} ${noun} ohne Spalte`;
 }
 
 /**
@@ -206,10 +279,10 @@ function unknownStatusNotice(card: BoardElement): string {
  */
 export function orderChildren(children: BoardElement[], columns: Column[]): BoardElement[] {
   const rank = new Map(columns.map((c, i) => [c.status, i]));
-  const doneStatuses = new Set(columns.filter((c) => c.done).map((c) => c.status));
+  const doneSet = doneStatuses(columns);
   return [...children].sort((a, b) => {
-    const doneA = doneStatuses.has(a.status) ? 1 : 0;
-    const doneB = doneStatuses.has(b.status) ? 1 : 0;
+    const doneA = doneSet.has(a.status) ? 1 : 0;
+    const doneB = doneSet.has(b.status) ? 1 : 0;
     if (doneA !== doneB) return doneA - doneB;
     const rankA = rank.get(a.status) ?? Number.MAX_SAFE_INTEGER;
     const rankB = rank.get(b.status) ?? Number.MAX_SAFE_INTEGER;

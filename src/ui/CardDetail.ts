@@ -17,9 +17,9 @@ import {
   relativeDate,
 } from '../core/dates';
 import { offerableLevels } from '../core/board';
-import { flowList } from '../core/frontmatter';
+import { flowList, yamlScalar } from '../core/frontmatter';
 import type { BoardElement, ElementType, FreeLink, ParentRef } from '../core/model';
-import type { Column, Level, LinkKind } from '../core/settings';
+import { type Column, isBottomLevel, type Level, type LinkKind } from '../core/settings';
 import { toggleTaskLine } from '../core/tasklist';
 
 // The edits the detail view collects and writes when it closes. `body` is the
@@ -134,6 +134,9 @@ interface LinkArt {
 export interface CardDetailHost {
   close(): void;
   openNote(path: string): void;
+  // Reveals the element's folder in the file tree (002 S4/K3, 008 S42);
+  // distinct from a click elsewhere in the field, which opens the picker (F054).
+  revealFolder(path: string): void;
   openChild(element: BoardElement): void;
   openLink(target: string): void;
   // Creates a new note (or, for a kind with a `prefix`, an ADR) next to the
@@ -324,6 +327,7 @@ export class CardDetail extends Component {
     fieldChange(frontmatter, 'planned', this.original.planned, this.draft.planned);
     fieldChange(frontmatter, 'due', this.original.due, this.draft.due);
     fieldChange(frontmatter, 'short', this.original.short, this.draft.short);
+    if (typeof frontmatter.short === 'string') frontmatter.short = yamlScalar(frontmatter.short);
 
     if (!sameList(this.draft.tags, this.original.tags)) {
       frontmatter.tags = this.draft.tags.length ? flowList(this.draft.tags, false) : null;
@@ -542,7 +546,11 @@ export class CardDetail extends Component {
       wrap.createSpan({ cls: 'ktm-label', text: 'Standardablage' });
       return;
     }
-    wrap.createSpan({ cls: 'ktm-folder-path', text: `${path}/` });
+    const pathSpan = wrap.createSpan({ cls: 'ktm-folder-path', text: `${path}/` });
+    this.registerDomEvent(pathSpan, 'click', (ev) => {
+      ev.stopPropagation();
+      this.host.revealFolder(path);
+    });
     if (own) wrap.createSpan({ cls: 'ktm-badge is-own', text: 'eigener Ordner' });
   }
 
@@ -583,11 +591,12 @@ export class CardDetail extends Component {
 
     const paint = (): void => {
       list.empty();
-      // A task draft additionally offers "Atomar" (008 S21, F055); an
-      // existing card and a draft that is already atomic (view
-      // all/internal) never land here (renderFolderField's early return).
+      // A draft at the bottom level additionally offers "Atomar" (008 S21,
+      // F055, F072 S22: not a fixed 'task'); an existing card and a draft
+      // that is already atomic (view all/internal) never land here
+      // (renderFolderField's early return).
       const fixed: HTMLElement[] = [];
-      if (this.isDraft && this.draft.type === 'task') {
+      if (this.isDraft && isBottomLevel(this.options.levels, this.draft.type)) {
         fixed.push(addItem('folder', 'Atomar', () => this.pickAtomic()));
       }
       fixed.push(addItem('folder', 'Standardablage', () => this.pickFolder(null)));

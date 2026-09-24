@@ -1,5 +1,6 @@
 import { dueState } from './dates';
 import type { BoardElement } from './model';
+import { isBottomLevel, type Level } from './settings';
 
 export interface TodayTasks {
   overdue: BoardElement[];
@@ -21,17 +22,21 @@ export interface TodayTile {
 /**
  * Selects the tasks the "Heute" area reports, across every project: open tasks
  * whose due date lies in the past (overdue) and — unless the planned report is
- * switched off — open tasks planned for today. Only tasks qualify; features and
- * epics never appear, so the board's level does not narrow the set. Done and
- * invalid tasks are left out. Ordering is left to the caller (F020).
+ * switched off — open tasks planned for today. Only elements at their
+ * project's bottom level qualify (F072, S22: not a fixed `'task'`); features
+ * and epics never appear, so the board's level does not narrow the set. Done
+ * and invalid tasks are left out. Ordering is left to the caller (F020).
  */
 export function today(
   elements: BoardElement[],
   todayISO: string,
   isDone: (task: BoardElement) => boolean,
   notifyPlanned: boolean,
+  levelsFor: (project: string) => Level[],
 ): TodayTasks {
-  const tasks = elements.filter((el) => el.type === 'task' && !el.invalid && !isDone(el));
+  const tasks = elements.filter(
+    (el) => isBottomLevel(levelsFor(el.project ?? ''), el.type) && !el.invalid && !isDone(el),
+  );
   const overdue = tasks.filter((el) => el.due !== undefined && dueState(el.due, todayISO) === 'overdue');
   const planned = notifyPlanned
     ? tasks.filter((el) => el.planned !== undefined && dueState(el.planned, todayISO) === 'today')

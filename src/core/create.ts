@@ -1,3 +1,4 @@
+import { yamlScalar } from './frontmatter';
 import type { ElementType } from './model';
 
 export interface NewElement {
@@ -33,21 +34,30 @@ export function baseName(title: string, today: string): string {
 
 /**
  * Folder and `_` note of a nested element under `parentFolder` (root, epic,
- * or feature folder).
+ * or feature folder). `taken` is the set of names already used in
+ * `parentFolder` (008 S28/S48, F068 K4): the folder's base name is made
+ * unique against it via {@link uniqueName} before either path is built, so a
+ * second same-day, same-title draft gets `<base>-2` instead of colliding
+ * with the first one's folder.
  */
 export function nestedPaths(
   parentFolder: string,
   title: string,
   today: string,
+  taken: Iterable<string> = [],
 ): { folder: string; note: string } {
-  const name = baseName(title, today);
+  const name = uniqueName(baseName(title, today), taken);
   const folder = join(parentFolder, name);
   return { folder, note: `${folder}/_${name}.md` };
 }
 
-/** Note path of an atomic task: a note in `_Tasks/Atomic/`, no folder. */
-export function atomicNotePath(title: string, today: string): string {
-  return `_Tasks/Atomic/${baseName(title, today)}.md`;
+/**
+ * Note path of an atomic task: a note in `_Tasks/Atomic/`, no folder. `taken`
+ * is the set of note stems (without `.md`) already used there (F068 K4),
+ * made unique the same way as {@link nestedPaths}.
+ */
+export function atomicNotePath(title: string, today: string, taken: Iterable<string> = []): string {
+  return `_Tasks/Atomic/${uniqueName(baseName(title, today), taken)}.md`;
 }
 
 /**
@@ -55,7 +65,7 @@ export function atomicNotePath(title: string, today: string): string {
  * No `ticket` (that turns the card into an ADO card), no empty fields.
  */
 export function noteContent(el: NewElement): string {
-  const lines = [`type: ${el.type}`, `title: ${el.title}`, `status: ${el.status}`];
+  const lines = [`type: ${el.type}`, `title: ${yamlScalar(el.title)}`, `status: ${el.status}`];
   if (el.project) lines.push(`project: ${el.project}`);
   return `---\n${lines.join('\n')}\n---\n`;
 }

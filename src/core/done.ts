@@ -8,7 +8,8 @@ export interface DoneCandidate {
   notePath: string;
   folderPath?: string;
   base: string;
-  done: boolean;
+  /** `undefined` for an unknown status (invalid note, key missing from the columns): not reconciled (F066). */
+  done: boolean | undefined;
   completed?: string;
 }
 
@@ -40,9 +41,12 @@ export interface DonePlan {
  * Returns `null` when location and status already agree. The `frontmatter`
  * change stamps `completed` when entering Done without one and clears it when
  * leaving Done, so the interactive path and an external status edit converge on
- * the same result.
+ * the same result. An unknown status (`done === undefined`) is never
+ * reconciled: an invalid note or one whose status key the columns don't carry
+ * stays exactly where it is (F066).
  */
 export function planDoneMove(c: DoneCandidate, today: string): DoneMove | null {
+  if (c.done === undefined) return null;
   const item = c.form === 'atomic' ? c.notePath : c.folderPath;
   if (!item) return null;
 
@@ -70,7 +74,11 @@ export function planDoneMove(c: DoneCandidate, today: string): DoneMove | null {
  * descendant is still open. A done container with an open descendant is left in
  * place and reported; a mirrored element under a done ancestor is not pulled
  * back out. When a container moves, its descendants' own moves are dropped from
- * the plan because the container's folder move carries them along.
+ * the plan because the container's folder move carries them along. An element
+ * with `done === undefined` (unknown status, F066) gets neither a move nor a
+ * notice: `planDoneMove` already refuses it. As a descendant it still counts
+ * as not done in {@link hierarchy}'s `firstOpenDescendant`, so a container
+ * above it errs on the side of staying open rather than migrating past it.
  */
 export function planDone(elements: DoneElement[], today: string): DonePlan {
   const ctx = hierarchy(elements);

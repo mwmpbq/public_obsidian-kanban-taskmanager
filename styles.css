@@ -183,7 +183,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--size-4-2);
-  padding: 0 var(--size-4-3) var(--size-4-2);
+  padding: 0 var(--size-4-2) var(--size-4-2);
 }
 
 .ktm-today-item {
@@ -782,8 +782,11 @@
   display: inline-flex;
   align-items: center;
   height: var(--size-4-4);
+  margin-left: var(--size-4-2);
   padding: 0 var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
   border-radius: 2em;
+  color: var(--text-faint);
   font-size: 11px;
   white-space: nowrap;
 }
@@ -791,6 +794,33 @@
 .ktm-badge.is-own {
   border: 1px solid rgba(var(--color-orange-rgb), 0.5);
   color: var(--color-orange);
+}
+
+.ktm-badge.is-global {
+  border: 1px dashed var(--background-modifier-border);
+  color: var(--text-muted);
+}
+
+.ktm-badge-reset {
+  display: inline-flex;
+  margin-left: var(--size-4-1);
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-badge-reset svg {
+  width: 13px;
+  height: 13px;
+}
+
+.ktm-dim-control .setting-item-control,
+.ktm-dim-list {
+  opacity: 0.55;
+}
+
+.ktm-dim-info .setting-item-name,
+.ktm-dim-info .setting-item-description {
+  opacity: 0.55;
 }
 
 .ktm-chip-ghost {
@@ -1082,6 +1112,26 @@
   text-decoration: line-through;
 }
 
+.ktm-description-rendered ul.contains-task-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.ktm-description-rendered ul.contains-task-list li.task-list-item {
+  margin: 0;
+}
+
+.ktm-description-rendered ul.contains-task-list li.task-list-item + li.task-list-item {
+  margin-top: var(--size-4-1);
+}
+
+.ktm-description-rendered ul.contains-task-list > li.task-list-item > .task-list-item-checkbox,
+.ktm-description-rendered ul.contains-task-list > li.task-list-item > p > .task-list-item-checkbox {
+  margin-inline-start: 0;
+  margin-inline-end: var(--size-4-2);
+}
+
 .ktm-description-edit {
   width: 100%;
   min-height: 160px;
@@ -1296,20 +1346,26 @@
   padding: calc(var(--size-4-4) + var(--size-4-2)) var(--size-4-10) var(--size-4-10);
 }
 
-.ktm-settings h2 {
-  margin: 0 0 var(--size-4-3);
-  font-size: 17px;
-  font-weight: var(--font-semibold);
+/* Abschnittskoepfe sind Setting-Zeilen mit Ueberschriftenrolle
+   (`new Setting(root).setName(...).setHeading()`, S44), kein rohes h2/h3:
+   Obsidian rendert sie als ".setting-item.setting-item-heading" mit dem
+   Text in ".setting-item-name". */
+.ktm-settings .setting-item-heading {
+  margin-bottom: var(--size-4-2);
 }
 
-.ktm-settings h3 {
-  margin: calc(var(--size-4-4) + var(--size-4-3)) 0 var(--size-4-2);
+.ktm-settings .setting-item-heading .setting-item-name {
   font-size: 14px;
   font-weight: var(--font-semibold);
 }
 
-.ktm-settings h3:first-of-type {
-  margin-top: var(--size-4-4);
+/* Obsidians eigene Regel ".vertical-tab-content .setting-item ~ :is(h1, h2,
+   h3, h4, .setting-item-heading)" (Spezifitaet 0,2,1) ueberschreibt sonst
+   unser margin-top mit --size-4-6 (24px) an jedem Kopf ausser dem ersten;
+   die dreifache Klasse hebt unsere Regel auf 0,3,1, ohne die Aeltere zu
+   veraendern (Wissenseintrag zum Abstand ueber Abschnittskoepfen). */
+.ktm-settings.ktm-settings.ktm-settings .setting-item-heading {
+  margin-top: calc(var(--size-4-4) + var(--size-4-3));
 }
 
 .ktm-scope {
@@ -1424,6 +1480,10 @@
   width: 150px;
 }
 
+.ktm-orderrow .ktm-select {
+  height: 26px;
+}
+
 .ktm-orderrow .ktm-button {
   height: 24px;
   padding: 0 var(--size-4-2);
@@ -1449,6 +1509,24 @@
 .ktm-addrow svg {
   width: var(--icon-xs);
   height: var(--icon-xs);
+}
+
+/* DESIGN.md §Reihenfolge-Liste ".ktm-preview": heading plus a card at the
+   board's real width, so the field order shown here is the order the board
+   itself renders (F058 K4). */
+.ktm-preview {
+  margin-top: var(--size-4-3);
+}
+
+.ktm-preview-heading {
+  display: block;
+  margin-bottom: var(--size-4-2);
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.ktm-preview .ktm-card {
+  width: 280px;
 }
 
 .ktm-textinput {
