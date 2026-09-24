@@ -29,7 +29,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
+          assets="main.js manifest.json styles.css"
+          if [ -f LLM-GUIDE.md ]; then assets="$assets LLM-GUIDE.md"; fi
           gh release create "$TAG" \
             --title "$TAG" \
             --latest \
-            main.js manifest.json styles.css
+            --notes "For LLMs working with this plugin: LLM-GUIDE.md describes the data model, what changed in this version and how to migrate from earlier versions." \
+            $assets
