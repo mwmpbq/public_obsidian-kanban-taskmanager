@@ -1,7 +1,9 @@
 import { canChangeLevel } from './board';
 import { atomicNotePath, nestedPaths, renameTarget, uniqueName } from './create';
+import type { DoneCandidate } from './done';
 import { type FrontmatterChange, yamlScalar } from './frontmatter';
 import type { BoardElement, ElementType, TaskForm } from './model';
+import { ownsFolder } from './placement';
 import type { Level } from './settings';
 
 export interface RefileElement {
@@ -65,13 +67,18 @@ export function missingRootNotice(root: string, exists: (root: string) => boolea
  * trigger a false collision. `target.missingRoot` (006 S43, F071 K4) short-
  * circuits every other field: the caller has already decided the target
  * root does not exist, so nothing is renamed and nothing is written, only
- * `blocked` carries the notice back.
+ * `blocked` carries the notice back. `ownsFolder` (default `true`, the
+ * pre-011 shape every existing caller of this function assumes) decides
+ * whether a nested element's whole folder is renamed/moved along, or only
+ * its own note (011, "Ordner beim Einordnen ... mitziehen", {@link
+ * ownsFolder}): an atomic task always moves only its note, regardless.
  */
 export function planRefile(
   element: RefileElement,
   target: RefileTarget,
   children: BoardElement[],
   taken: Iterable<string> = [],
+  ownsFolder = true,
 ): RefilePlan {
   if (target.missingRoot) {
     return { frontmatter: {}, notePath: element.notePath, blocked: target.missingRoot };
@@ -87,29 +94,56 @@ export function planRefile(
     else notice = check.reason;
   }
   if (element.form === 'atomic' && target.project !== undefined) {
-    frontmatter.project = target.project || null;
+    // `project` is a Pflichtfeld (011): an atomic task without a chosen
+    // project is `intern`, never a cleared field.
+    frontmatter.project = target.project || 'intern';
   }
 
   if (element.form === 'atomic') {
-    const notePath = target.title ? renameTarget(element.notePath, target.title).note : element.notePath;
+    const notePath = target.title ? renameTarget(element.notePath, target.title, false).note : element.notePath;
     const move = notePath === element.notePath ? undefined : { from: element.notePath, to: notePath, parent: dirOf(notePath) };
+    return { move, frontmatter, notePath, notice };
+  }
+
+  if (!ownsFolder) {
+    // The folder is shared with another element note, or is a Root/Done/
+    // Atomic segment (011): only this note itself moves and/or renames, the
+    // folder — and whatever else lives in it — stays exactly where it is.
+    const renamedNote = target.title ? renameTarget(element.notePath, target.title, false).note : element.notePath;
+    let notePath = renamedNote;
+    if (target.parentFolder !== undefined) {
+      const stem = baseName(renamedNote).replace(/\.md$/, '');
+      const takenStems = [...taken].map((name) => name.replace(/\.md$/, ''));
+      notePath = `${target.parentFolder}/${uniqueName(stem, takenStems)}.md`;
+    }
+    const move =
+      notePath === element.notePath ? undefined : { from: element.notePath, to: notePath, parent: dirOf(notePath) };
     return { move, frontmatter, notePath, notice };
   }
 
   const folderPath = element.folderPath ?? dirOf(element.notePath);
   const currentBase = baseName(folderPath);
   const currentParent = dirOf(folderPath);
-  const newBase = target.title
-    ? baseName(renameTarget(element.notePath, target.title).folder ?? folderPath)
-    : currentBase;
+  const renamed = target.title ? renameTarget(element.notePath, target.title, true) : undefined;
+  const newBase = renamed ? baseName(renamed.folder ?? folderPath) : currentBase;
   const parentDir = target.parentFolder ?? currentParent;
   const moves = parentDir !== currentParent || newBase !== currentBase;
   const finalBase = moves ? uniqueName(newBase, taken) : currentBase;
   const finalFolder = join(parentDir, finalBase);
-  const finalNote = `${finalFolder}/_${finalBase}.md`;
+  // The note keeps its own file name unless the rename itself is what moved
+  // it (011, "Die Zielnotiz behält ihren Dateinamen statt _<base>.md"): a
+  // folder move alone never touches the note's file name.
+  const finalNote = renamed ? `${finalFolder}/${finalBase}.md` : `${finalFolder}/${baseName(element.notePath)}`;
   const move = finalFolder === folderPath ? undefined : { from: folderPath, to: finalFolder, parent: parentDir };
   return { move, frontmatter, notePath: finalNote, notice };
 }
+
+export interface RefileRules {
+  /** "Datei und Ordner beim Umbenennen des Titels mit umbenennen", Standard aus. */
+  renameOnTitleChange: boolean;
+}
+
+const DEFAULT_REFILE_RULES: RefileRules = { renameOnTitleChange: false };
 
 /**
  * The vault access a placement decision needs, handed in by the caller
@@ -124,8 +158,18 @@ export interface RefileEnv {
   levelsFor: (project: string) => Level[];
   rootExists: (root: string) => boolean;
   siblings: (folder: string) => string[];
-  linkTo: (targetNotePath: string, sourceNotePath: string) => string;
   childrenOf: (element: BoardElement) => BoardElement[];
+  /** Ablageregeln 2/3 (011); defaults to the Standard (moveFolder an, renameOnTitleChange aus). */
+  rules?: RefileRules;
+  /**
+   * The finished wikilink text from an ancestor's note to a (possibly not
+   * yet moved) source note, with the ancestor's `title` as alias
+   * (adapters/obsidian.ts#parentLinkTo the way BoardView#refileEnv supplies
+   * it, 011, Ergänzung 2026-09-25). Optional so a test env may omit it;
+   * `planFiling` then writes `parent` alone, without `parent_link` (008 S38,
+   * F088).
+   */
+  linkTo?: (targetNote: string, sourceNote: string, title: string) => string | undefined;
 }
 
 /**
@@ -147,6 +191,45 @@ export function projectRootForElement(
     }
   }
   return best;
+}
+
+/**
+ * The longest configured project root that prefixes a note's own path (not
+ * its folder): the Done reconciliation's `base` for a nested element, since
+ * an element already mirrored under `<root>/Done/...` has no folder prefixed
+ * by the root itself once it's there — the note path always is.
+ */
+export function rootForPath(notePath: string, roots: { root: string }[]): string | undefined {
+  return roots
+    .map((r) => r.root.replace(/\/+$/, ''))
+    .filter((root) => root && notePath.startsWith(`${root}/`))
+    .sort((a, b) => b.length - a.length)[0];
+}
+
+/**
+ * The candidate main.ts#fileByStatus needs for exactly one element's own,
+ * just-applied status change (011, Ablageregel 1): `base` is the element's
+ * root (or the atomic base), and {@link ownsFolder} decides whether its whole
+ * folder may drag along or only its note — shared by BoardView and
+ * SettingsTab so the two interactive paths that can change a status build
+ * the same candidate.
+ */
+export function doneCandidateFor(
+  element: Pick<BoardElement, 'id' | 'form' | 'paths' | 'completed'>,
+  done: boolean | undefined,
+  elements: Pick<BoardElement, 'id' | 'paths' | 'parents' | 'invalid' | 'duplicate'>[],
+  roots: { root: string }[],
+): DoneCandidate {
+  const owns = element.form !== 'atomic' && ownsFolder(element, elements, roots.map((r) => ({ key: '', root: r.root })));
+  const base = element.form === 'atomic' ? ATOMIC_BASE : (rootForPath(element.paths.note, roots) ?? '');
+  return {
+    form: owns ? element.form : 'atomic',
+    notePath: element.paths.note,
+    folderPath: element.paths.folder,
+    base,
+    done,
+    completed: element.completed,
+  };
 }
 
 /**
@@ -207,11 +290,20 @@ const ATOMIC_BASE = '_Tasks/Atomic';
  * parent wikilink, wissen #586). Each branch de-duplicates the base name
  * against the names already taken at the target (008 S28/S48, F068 K4).
  */
+export interface DraftPlacement {
+  path: string;
+  project?: string;
+  parent?: string;
+  /** The ancestor's own note path, only when `parent` is set (K8: builds `parent_link`). */
+  parentNote?: string;
+  missingRoot?: string;
+}
+
 export function planDraftPlacement(
   target: DraftPlacementTarget,
   env: RefileEnv,
   today: string,
-): { path: string; project?: string; parent?: string; missingRoot?: string } | undefined {
+): DraftPlacement | undefined {
   if (target.atomic) {
     const taken = env.siblings(ATOMIC_BASE).map((name) => name.replace(/\.md$/, ''));
     return { path: atomicNotePath(target.title, today, taken), project: target.project };
@@ -230,8 +322,10 @@ export function planDraftPlacement(
   // here still precedes any vault write.
   const notice = missingRootNotice(resolved.folder, env.rootExists);
   if (notice) return { path: note, missingRoot: notice };
-  const parent = resolved.ancestor ? env.linkTo(resolved.ancestor.paths.note, note) : undefined;
-  return { path: note, parent };
+  // `project` is a Pflichtfeld now (011): the standard-filing branch must
+  // carry it along too, not just the atomic/ownFolder ones (F088 K6).
+  if (!resolved.ancestor) return { path: note, project: target.project };
+  return { path: note, project: target.project, parent: resolved.ancestor.id, parentNote: resolved.ancestor.paths.note };
 }
 
 // The five fields a filing edit can touch (mirrors CardDetail's
@@ -265,14 +359,31 @@ export interface FilingRequest {
  * has settled the final note path (F073 S20/K1): a rename or a move to a
  * different folder changes `notePath`, and a relative wikilink built against
  * the old path would resolve wrongly, or not at all, from the new one.
+ *
+ * A title change alone renames folder and note only with Ablageregel 3
+ * (`env.rules.renameOnTitleChange`) on, otherwise it writes just the `title`
+ * field (K22); {@link ownsFolder} decides whether that rename drags the
+ * whole folder along or only this note. A project switch or a parentLabel
+ * move (the link list's cross) no longer moves anything here at all (011,
+ * Ergänzung 2026-09-25, replacing the retired Ablageregel 2): they only
+ * write `project`/`parent`/`parent_link`, and the move that follows from
+ * that is main.ts#placeElement's job, once the write lands back through
+ * `metadataCache.on('changed')`.
  */
 export function planFiling(element: BoardElement, refile: FilingRequest, env: RefileEnv): RefilePlan {
+  const rules = env.rules ?? DEFAULT_REFILE_RULES;
   const target: RefileTarget = {};
-  if (refile.title) target.title = refile.title;
-  if (refile.type) target.type = refile.type;
   const extra: FrontmatterChange = {};
   let parentAncestor: string | undefined;
+  let parentAncestorNote: string | undefined;
+  let parentAncestorTitle: string | undefined;
   let clearParent = false;
+
+  if (refile.title) {
+    if (rules.renameOnTitleChange) target.title = refile.title;
+    else extra.title = yamlScalar(refile.title);
+  }
+  if (refile.type) target.type = refile.type;
 
   if (element.form === 'atomic') {
     if (refile.project !== undefined) target.project = refile.project;
@@ -280,27 +391,44 @@ export function planFiling(element: BoardElement, refile: FilingRequest, env: Re
     const result = resolveFolderRefile(element, refile.folder, target, env);
     Object.assign(extra, result.frontmatter);
     parentAncestor = result.parentAncestor;
+    parentAncestorNote = result.parentAncestorNote;
+    parentAncestorTitle = result.parentAncestorTitle;
     clearParent = result.clearParent ?? false;
   } else if (refile.project !== undefined && refile.project !== (element.project ?? '')) {
     const project = env.projects.find((p) => p.key === refile.project);
     if (project) {
-      // A project switch into a root the vault does not have (006 S43, F071
-      // K4): the plan must write nothing rather than create the folder, so
-      // this checks before parentFolder is ever set.
-      const notice = missingRootNotice(project.root, env.rootExists);
-      if (notice) target.missingRoot = notice;
-      else {
-        target.parentFolder = project.root.replace(/\/+$/, '');
-        extra.parent = null;
+      if (!project.root.replace(/\/+$/, '')) {
+        // A target project without a root (011, Ergänzung 2026-09-25, S83
+        // "Root-Grenzfälle") has no Standardablage: the switch writes only
+        // `project`, no missingRoot notice (that would name an empty path),
+        // and `parent`/`parent_link` are left exactly as they are.
+        extra.project = refile.project;
+      } else {
+        // A project switch into a root the vault does not have (006 S43, F071
+        // K4): the plan must write nothing rather than create the folder, so
+        // this checks before parentFolder is ever set.
+        const notice = missingRootNotice(project.root, env.rootExists);
+        if (notice) target.missingRoot = notice;
+        else {
+          // `project` is a Pflichtfeld now (011): a folder move alone would
+          // otherwise leave the note under its old project's field. The old
+          // parent's `parent_link` would else keep pointing at an ancestor of
+          // the abandoned project (K20), so it clears alongside `parent`.
+          extra.project = refile.project;
+          clearParent = true;
+        }
       }
     }
   } else if (refile.parentLabel !== undefined) {
     const resolved = resolveParentTarget(refile.parentLabel, env, { element });
-    if (!element.ownFolder) target.parentFolder = resolved.folder;
-    if (resolved.ancestor) parentAncestor = resolved.ancestor.paths.note;
-    else clearParent = true;
+    if (resolved.ancestor) {
+      parentAncestor = resolved.ancestor.id;
+      parentAncestorNote = resolved.ancestor.paths.note;
+      parentAncestorTitle = resolved.ancestor.title;
+    } else clearParent = true;
   }
 
+  const owns = element.form !== 'atomic' && ownsFolder(element, env.elements, env.projects);
   const taken = target.parentFolder ? env.siblings(target.parentFolder) : [];
   const plan = planRefile(
     {
@@ -312,9 +440,24 @@ export function planFiling(element: BoardElement, refile: FilingRequest, env: Re
     target,
     env.childrenOf(element),
     taken,
+    owns,
   );
-  if (parentAncestor) extra.parent = env.linkTo(parentAncestor, plan.notePath);
-  else if (clearParent) extra.parent = null;
+  // The `parent_link` wikilink is built against the plan's final note path
+  // (F073 wissen #683), only once `planRefile` has settled it, and only
+  // where a `parent` is actually (re)written — clearing `parent` clears
+  // `parent_link` alongside it (wissen #686: a cleared field is left out of
+  // the frontmatter entirely, not written as `null` literally).
+  if (parentAncestor) {
+    extra.parent = parentAncestor;
+    const link =
+      parentAncestorNote && parentAncestorTitle !== undefined
+        ? env.linkTo?.(parentAncestorNote, plan.notePath, parentAncestorTitle)
+        : undefined;
+    if (link) extra.parent_link = yamlScalar(link);
+  } else if (clearParent) {
+    extra.parent = null;
+    extra.parent_link = null;
+  }
   Object.assign(plan.frontmatter, extra);
   return plan;
 }
@@ -322,31 +465,52 @@ export function planFiling(element: BoardElement, refile: FilingRequest, env: Re
 // Folder-field branch of planFiling (F054, 008 S35-S37): a chosen folder
 // becomes the new parent folder, project is written as its own field,
 // because the element thereby steps outside every root and would otherwise
-// be missing it on the next read (wissen #477). "Default filing" (`folder
-// === null`) pulls back into the folder of the current parent or the
-// project root and clears both fields again, because the folder hierarchy
-// then carries them again. The `parent` wikilink itself is left for the
-// caller to build once the final note path is known (F073 S20/K1):
-// `parentAncestor` names the ancestor to link to, `clearParent` says there
-// is none to link and the field must be emptied instead.
+// be missing it on the next read (wissen #477). It also sets `ktm_placement:
+// manual` (011, Ergänzung 2026-09-25): a deliberately chosen own folder must
+// not be pulled back under the parent's folder the moment `parent` changes
+// and main.ts#placeElement reacts to it. "Default filing" (`folder === null`)
+// pulls back into the folder of the current parent or the project root,
+// clears both fields again, and sets `ktm_placement: auto` — the folder
+// hierarchy carries the relationship again, so the placer may resume. The
+// `parent` wikilink itself is left for the caller to build once the final
+// note path is known (F073 S20/K1): `parentAncestor` names the ancestor to
+// link to, `clearParent` says there is none to link and the field must be
+// emptied instead.
 function resolveFolderRefile(
   element: BoardElement,
   folder: string | null,
   target: RefileTarget,
   env: RefileEnv,
-): { frontmatter: FrontmatterChange; parentAncestor?: string; clearParent?: boolean } {
+): {
+  frontmatter: FrontmatterChange;
+  parentAncestor?: string;
+  parentAncestorNote?: string;
+  parentAncestorTitle?: string;
+  clearParent?: boolean;
+} {
+  // `project` stays a Pflichtfeld either way (011): the folder field only
+  // decides where the note is filed, never which project it belongs to.
   if (folder === null) {
+    // The existing `parent` field is left exactly as it is (011): the pick
+    // only removes the own-folder override, it does not touch the ancestor
+    // relationship. Clearing it here would leave main.ts#placeElement with
+    // no ancestor to compute a folder from, right after this same write.
     const parent = element.parents[0];
     const parentFolder = parent ? env.elements.find((e) => e.paths.note === parent.note)?.paths.folder : undefined;
     target.parentFolder =
       parentFolder ?? env.projects.find((p) => p.key === element.project)?.root.replace(/\/+$/, '');
-    return { frontmatter: { project: null }, clearParent: true };
+    return {
+      frontmatter: { project: element.project ?? 'intern', ktm_placement: 'auto' },
+      clearParent: !parent,
+    };
   }
   target.parentFolder = folder;
   const parent = element.parents[0];
   return {
-    frontmatter: { project: element.project ?? null },
-    parentAncestor: parent?.note,
+    frontmatter: { project: element.project ?? 'intern', ktm_placement: 'manual' },
+    parentAncestor: parent?.id,
+    parentAncestorNote: parent?.note,
+    parentAncestorTitle: parent?.title,
     clearParent: !parent,
   };
 }

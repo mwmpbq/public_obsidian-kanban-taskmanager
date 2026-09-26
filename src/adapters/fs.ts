@@ -1,7 +1,8 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { FileEntry, ProjectRoot } from '../core/model';
+import type { FileSource } from '../core/vault-index';
 
 export interface LoadedVault {
   entries: FileEntry[];
@@ -21,17 +22,54 @@ export function loadVault(vaultDir: string): LoadedVault {
   for (const abs of walk(vaultDir)) {
     if (!abs.endsWith('.md')) continue;
     const path = relative(vaultDir, abs).split(sep).join('/');
-    const { frontmatter, body } = splitFrontmatter(readFileSync(abs, 'utf8'));
-    entries.push({ path, frontmatter, body });
+    const entry = readEntry(vaultDir, path);
+    entries.push(entry);
 
-    const key = frontmatter.ktm_project;
-    const root = frontmatter.ktm_root;
+    const key = entry.frontmatter.ktm_project;
+    const root = entry.frontmatter.ktm_root;
     if (typeof key === 'string' && typeof root === 'string') {
       roots.push({ key, root });
     }
   }
 
   return { entries, roots };
+}
+
+function readEntry(vaultDir: string, path: string): FileEntry {
+  const abs = join(vaultDir, ...path.split('/'));
+  const { frontmatter, body } = splitFrontmatter(readFileSync(abs, 'utf8'));
+  const ctime = statSync(abs).ctimeMs;
+  return { path, frontmatter, body, ctime };
+}
+
+/**
+ * {@link FileSource} over a vault directory on disk (011 S61/K30): `list()`
+ * walks the tree once and keeps only paths whose frontmatter carries
+ * `ktm_id` or `ktm_project`, `read()` reparses exactly the one file asked
+ * for. Used by the {@link ElementIndex} tests, which need to count reads.
+ */
+export function fsFileSource(vaultDir: string): FileSource {
+  return {
+    async list(): Promise<string[]> {
+      const paths: string[] = [];
+      for (const abs of walk(vaultDir)) {
+        if (!abs.endsWith('.md')) continue;
+        const path = relative(vaultDir, abs).split(sep).join('/');
+        const { frontmatter } = readEntry(vaultDir, path);
+        if (typeof frontmatter.ktm_id === 'string' || typeof frontmatter.ktm_project === 'string') {
+          paths.push(path);
+        }
+      }
+      return paths;
+    },
+    async read(path: string): Promise<FileEntry | undefined> {
+      try {
+        return readEntry(vaultDir, path);
+      } catch {
+        return undefined;
+      }
+    },
+  };
 }
 
 function* walk(dir: string): Generator<string> {

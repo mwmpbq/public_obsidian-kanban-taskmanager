@@ -1,8 +1,6 @@
 import type { FrontmatterChange } from './frontmatter';
 import type { ElementType, TaskForm } from './model';
 
-const DONE_SEGMENT = 'Done';
-
 export interface DoneCandidate {
   form: TaskForm;
   notePath: string;
@@ -13,14 +11,6 @@ export interface DoneCandidate {
   completed?: string;
 }
 
-export interface DoneMove {
-  from: string;
-  to: string;
-  toNotePath: string;
-  parent: string;
-  frontmatter: FrontmatterChange | null;
-}
-
 // A candidate enriched with the hierarchy facts the container rules need: its
 // kind, its title for the notice text, and its immediate parent's note path.
 export interface DoneElement extends DoneCandidate {
@@ -29,85 +19,24 @@ export interface DoneElement extends DoneCandidate {
   parentNote?: string;
 }
 
-export interface DonePlan {
-  moves: DoneMove[];
-  notices: string[];
+export interface CompletedCandidate {
+  /** `undefined` for an unknown status (invalid note, key missing from the columns): left alone. */
+  done: boolean | undefined;
+  completed?: string;
 }
 
 /**
- * Plans the move a task needs so its folder location matches its status: a done
- * status wants the element under `<base>/Done/<rel>`, an open status wants it at
- * `<base>/<rel>`. Nested tasks move their whole folder, atomic tasks their note.
- * Returns `null` when location and status already agree. The `frontmatter`
- * change stamps `completed` when entering Done without one and clears it when
- * leaving Done, so the interactive path and an external status edit converge on
- * the same result. An unknown status (`done === undefined`) is never
- * reconciled: an invalid note or one whose status key the columns don't carry
- * stays exactly where it is (F066).
+ * The `completed`-field reconciliation alone, without a path or a move (011:
+ * the Done/-Ordner-Umzug is now part of core/placement.ts#computedLocation,
+ * driven by main.ts#placeElement off the element's own status change, never a
+ * set-wide sweep): a closed status without `completed` is stamped with
+ * `today`, an open one that still carries `completed` has it cleared, an
+ * unknown status (`done === undefined`) is left untouched either way.
  */
-export function planDoneMove(c: DoneCandidate, today: string): DoneMove | null {
+export function reconcileCompleted(c: CompletedCandidate, today: string): FrontmatterChange | null {
   if (c.done === undefined) return null;
-  const item = c.form === 'atomic' ? c.notePath : c.folderPath;
-  if (!item) return null;
-
-  const rel = relativeTo(c.base, item);
-  if (rel === null || rel === '') return null;
-
-  const mirrored = rel === DONE_SEGMENT || rel.startsWith(DONE_SEGMENT + '/');
-  const logical = mirrored ? rel.slice(DONE_SEGMENT.length + 1) : rel;
-  if (!logical) return null;
-
-  if (c.done && !mirrored) {
-    const to = `${c.base}/${DONE_SEGMENT}/${logical}`;
-    return move(c, item, to, c.completed ? null : { completed: today });
-  }
-  if (!c.done && mirrored) {
-    const to = `${c.base}/${logical}`;
-    return move(c, item, to, c.completed ? { completed: null } : null);
-  }
-  return null;
-}
-
-/**
- * Plans every reconciling move for a whole element set at once, so a container
- * only follows its children into the Done mirror once it is itself done and no
- * descendant is still open. A done container with an open descendant is left in
- * place and reported; a mirrored element under a done ancestor is not pulled
- * back out. When a container moves, its descendants' own moves are dropped from
- * the plan because the container's folder move carries them along. An element
- * with `done === undefined` (unknown status, F066) gets neither a move nor a
- * notice: `planDoneMove` already refuses it. As a descendant it still counts
- * as not done in {@link hierarchy}'s `firstOpenDescendant`, so a container
- * above it errs on the side of staying open rather than migrating past it.
- */
-export function planDone(elements: DoneElement[], today: string): DonePlan {
-  const ctx = hierarchy(elements);
-  const notices: string[] = [];
-  const candidates: { el: DoneElement; move: DoneMove }[] = [];
-  const movers = new Set<string>();
-
-  for (const el of elements) {
-    const plan = planDoneMove(el, today);
-    if (!plan) continue;
-    if (el.done) {
-      const open = ctx.firstOpenDescendant(el);
-      if (open) {
-        notices.push(closeNotice(el.title, open.title));
-        continue;
-      }
-    } else {
-      const ancestor = ctx.doneAncestor(el);
-      if (ancestor) {
-        notices.push(reopenNotice(ancestor.title));
-        continue;
-      }
-    }
-    candidates.push({ el, move: plan });
-    movers.add(el.notePath);
-  }
-
-  const moves = candidates.filter((c) => !ctx.hasAncestorIn(c.el, movers)).map((c) => c.move);
-  return { moves, notices };
+  if (c.done) return c.completed ? null : { completed: today };
+  return c.completed ? { completed: null } : null;
 }
 
 /**
@@ -164,12 +93,7 @@ function hierarchy(all: DoneElement[]) {
     return undefined;
   };
 
-  const hasAncestorIn = (el: DoneElement, set: Set<string>): boolean => {
-    for (const parent of ancestors(el)) if (set.has(parent.notePath)) return true;
-    return false;
-  };
-
-  return { firstOpenDescendant, doneAncestor, hasAncestorIn };
+  return { firstOpenDescendant, doneAncestor };
 }
 
 function closeNotice(container: string, task: string): string {
@@ -178,30 +102,4 @@ function closeNotice(container: string, task: string): string {
 
 function reopenNotice(feature: string): string {
   return `Zuerst „${feature}" wieder öffnen.`;
-}
-
-function move(
-  c: DoneCandidate,
-  from: string,
-  to: string,
-  frontmatter: FrontmatterChange | null,
-): DoneMove {
-  const toNotePath = c.form === 'atomic' ? to : `${to}/${baseName(c.notePath)}`;
-  return { from, to, toNotePath, parent: parentPath(to), frontmatter };
-}
-
-function relativeTo(base: string, path: string): string | null {
-  if (path === base) return '';
-  if (path.startsWith(base + '/')) return path.slice(base.length + 1);
-  return null;
-}
-
-function baseName(path: string): string {
-  const cut = path.lastIndexOf('/');
-  return cut === -1 ? path : path.slice(cut + 1);
-}
-
-function parentPath(path: string): string {
-  const cut = path.lastIndexOf('/');
-  return cut === -1 ? '' : path.slice(0, cut);
 }

@@ -10,14 +10,7 @@ import {
   TFolder,
   type WorkspaceLeaf,
 } from 'obsidian';
-import {
-  createNote,
-  folderExists,
-  moveElement,
-  readVault,
-  writeBody,
-  writeFrontmatter,
-} from '../adapters/obsidian';
+import { createNote, folderExists, moveElement, parentLinkTo, writeBody, writeFrontmatter } from '../adapters/obsidian';
 import {
   allViewLevels,
   type BoardColumn,
@@ -26,20 +19,24 @@ import {
   orderChildren,
 } from '../core/board';
 import { adrTarget, linkFolder, noteContent, noteTarget, uniqueName } from '../core/create';
-import { fullDate, priorityIcon, relativeDate } from '../core/dates';
-import { type DoneElement, guardMove, planDone } from '../core/done';
+import { fullDate, priorityIcon, relativeDate, todayISO } from '../core/dates';
+import { type DoneElement, guardMove, reconcileCompleted } from '../core/done';
 import type { FrontmatterChange } from '../core/frontmatter';
+import { newId } from '../core/ids';
 import type { BoardElement, ElementType, ParentRef, ProjectRoot, TaskForm } from '../core/model';
 import { type Move, type MoveDirection, moveByDirection, moveToColumn } from '../core/move';
+import { isAmbiguousFolder } from '../core/placement';
 import { reorderColumn } from '../core/order';
 import { linksOf, readElements } from '../core/read';
 import {
+  type DraftPlacement,
   planDraftPlacement,
   planFiling,
   planRefile,
   projectRootForElement,
   type RefileEnv,
   type RefilePlan,
+  rootForPath,
 } from '../core/refile';
 import {
   DEFAULT_TODAY_SORT,
@@ -77,6 +74,8 @@ const ICON_DUE = 'flag';
 
 const VIEW_ALL = 'all';
 const VIEW_INTERNAL = 'internal';
+// The literal `project` value an element without a real project carries (011).
+const INTERNAL_PROJECT = 'intern';
 
 // F010 owns creating a task; the toolbar button forwards to its command so the
 // wiring is real once that command lands, and a plain pass-through until then.
@@ -105,6 +104,8 @@ interface StackedFrom {
 interface OpenDetail {
   detail: CardDetail;
   path: string;
+  /** The element's `ktm_id` (011 K5-K8); undefined for a draft, which is never retargeted. */
+  id?: string;
   cardEl: HTMLElement;
   coverEl: HTMLElement;
   resize: ResizeObserver;
@@ -151,17 +152,9 @@ interface DragState {
   insertIndex?: number;
 }
 
-type KtmWindow = Window & { __ktmToday?: unknown };
-
 // Production reads the local system date; the measurement pins a day via
-// window.__ktmToday so the relative labels are deterministic.
-function todayISO(win: Window): string {
-  const override = (win as KtmWindow).__ktmToday;
-  if (typeof override === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(override)) return override;
-  const now = new Date();
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
+// window.__ktmToday so the relative labels are deterministic (core/dates#todayISO).
+export type KtmWindow = Window & { __ktmToday?: unknown };
 
 interface BoardViewState {
   view?: string;
@@ -183,9 +176,13 @@ export class BoardView extends ItemView {
   private drag?: DragState;
   private reconciling = false;
   private reconcileTimer?: number;
+  private reconcileMissed = false;
   private readonly shownNotices = new Set<string>();
   private readonly elementByPath = new Map<string, BoardElement>();
   private readonly bodyByPath = new Map<string, string>();
+  // Every `ktm_id` currently in the vault, valid or not (011), so a freshly
+  // drawn id (new note, "Neue Kennung vergeben") never collides.
+  private knownIds = new Set<string>();
   private detail?: OpenDetail;
   // The dimmed, inert entry beneath a stacked draft
   // (F053); set exactly when `this.detail` currently is the draft.
@@ -247,11 +244,9 @@ export class BoardView extends ItemView {
     // never triggers a second, still-active listener on the card
     // underneath.
     this.registerDomEvent(this.contentEl.doc, 'keydown', (ev) => this.onDetailEscape(ev), true);
-    this.registerEvent(
-      this.app.metadataCache.on('changed', (file, _data, cache) => this.onNoteChanged(file, cache)),
-    );
-    this.registerEvent(this.app.vault.on('rename', () => this.scheduleReconcile()));
-    this.registerEvent(this.app.vault.on('delete', () => this.scheduleReconcile()));
+    // metadataCache 'changed'/vault 'rename'/'delete' are registered once at
+    // plugin level (main.ts), feeding the shared ElementIndex first and this
+    // view second through the public hooks below (011 S61).
     await this.render();
   }
 
@@ -277,14 +272,73 @@ export class BoardView extends ItemView {
   // the note behind the open detail card is special-cased (K3/K4): the guard
   // in scheduleReconcile would otherwise drop it until the card closes, and a
   // followed rename reaches the open note the same way, as a rewritten
-  // wikilink in its own frontmatter (alwaysUpdateLinks).
-  private onNoteChanged(file: TAbstractFile, cache: CachedMetadata): void {
-    if (!file.path.endsWith('.md')) return;
-    if (this.detail && file.path === this.detail.path) {
+  // wikilink in its own frontmatter (alwaysUpdateLinks). Called by the
+  // plugin (main.ts#onNoteChanged) after the shared ElementIndex already
+  // reflects the change.
+  onNoteChanged(path: string, cache: CachedMetadata): void {
+    if (this.detail && path === this.detail.path) {
       this.refreshDetailLinks(cache);
       return;
     }
+    // Obsidian's file watcher reports an *external* rename (011 K5-K8, e.g.
+    // Node's fs.renameSync outside the app) not through `vault.on('rename')`
+    // but as the old path disappearing and the new one being indexed fresh —
+    // which surfaces here, as 'changed' for the new path, once its metadata
+    // resolves. Retargeting on every 'changed', not only on an actual
+    // `onRename` call, is what catches that case; a no-op otherwise.
+    this.retargetDetail();
     this.scheduleReconcile();
+  }
+
+  // Called by the plugin (main.ts#onVaultRename) after the shared
+  // ElementIndex already reflects the rename: retargets an open detail via
+  // its `ktm_id` (011 K5-K8), then falls back to the normal debounced
+  // reconcile for everything else the rename might affect (a card's own
+  // column entry, a parent chip elsewhere).
+  onRename(_newPath: string, _oldPath: string): void {
+    this.retargetDetail();
+    this.scheduleReconcile();
+  }
+
+  // Called by the plugin (main.ts#onVaultDelete). An open detail whose own
+  // note was deleted is left exactly as it is (closeDetail already refuses
+  // to write and shows a notice, 008 S45); everything else the board might
+  // need to drop follows the normal debounced reconcile.
+  onDelete(_path: string): void {
+    this.scheduleReconcile();
+  }
+
+  // Keeps an open detail card pointed at its own note through a rename or a
+  // move, including a move outside every root, and a rename Obsidian reports
+  // as delete+create (011 K5-K8): identity comes from `ktm_id`, recomputed
+  // purely in memory from the already-updated index (no vault access), so
+  // repeated calls for the same move (a folder rename plus a per-child event,
+  // Wissen #6) cost nothing beyond the first and a draft (no id) is left
+  // untouched.
+  private retargetDetail(): void {
+    const open = this.detail;
+    if (!open || open.id === undefined) return;
+    const entries = this.plugin.index.latestEntries();
+    const roots = this.plugin.index.roots();
+    const resolved = resolveProjectSettings(entries);
+    const visible = withoutHiddenProjects(entries, roots, resolved.projects);
+    const levelsFor = (project: string) => this.projectSettings(project).levels;
+    const linkKindsFor = (project: string) => this.projectSettings(project).linkKinds;
+    const elements = readElements(visible.entries, visible.roots, linkKindsFor, levelsFor);
+    const fresh = elements.find((el) => el.id === open.id);
+    if (!fresh || fresh.paths.note === open.path) return;
+
+    const target = fresh.paths.note;
+    this.elementByPath.delete(open.path);
+    this.elementByPath.set(target, fresh);
+    const body = this.bodyByPath.get(open.path);
+    if (body !== undefined) {
+      this.bodyByPath.delete(open.path);
+      this.bodyByPath.set(target, body);
+    }
+    open.path = target;
+    open.cardEl.setAttribute('data-card-id', target);
+    open.detail.refreshLocation(fresh.paths, fresh.ownFolder === true);
   }
 
   // Rereads only the free links of the open detail's own note from the fresh
@@ -305,21 +359,58 @@ export class BoardView extends ItemView {
 
   // The board's own writes echo through the same events; the reconciling guard
   // drops those, the open-detail guard keeps an edit in progress safe, and the
-  // debounce lands a single reconciling render well within two seconds.
+  // debounce lands a single reconciling render well within two seconds. An
+  // event dropped only because a detail was open sets reconcileMissed, so
+  // closing it without an accompanying render (catchUpReconcile) does not
+  // leave some other card showing a stale path (F087 finding).
+  //
+  // The guard above only stops a timer from being *planned* while reconciling
+  // is already true; a timer planned earlier still fires on schedule even if
+  // reconciling turns true in between (wissen #584/#775-adjacent race: an
+  // external status edit both a) triggers main.ts#placeElement's own move,
+  // wrapped in this same reconciling flag via runReconciling, and b) reaches
+  // this scheduler through the plain metadataCache 'changed' event first,
+  // since maybePlaceAfterChange only starts the move afterwards). Rendering
+  // then, mid-move, would read the note at its old, about-to-vanish path and
+  // reconcileDone's own writeFrontmatter races the rename underneath it
+  // (ENOENT). The timer callback re-checks reconciling at *execution* time
+  // too and defers to reconcileMissed/catchUpReconcile (already used for the
+  // open-detail case) instead of rendering into a moving target.
   private scheduleReconcile(): void {
-    if (this.reconciling || this.detail) return;
+    if (this.reconciling) return;
+    if (this.detail) {
+      this.reconcileMissed = true;
+      return;
+    }
     const win = this.contentEl.win;
     if (this.reconcileTimer !== undefined) win.clearTimeout(this.reconcileTimer);
     this.reconcileTimer = win.setTimeout(() => {
       this.reconcileTimer = undefined;
+      if (this.reconciling) {
+        this.reconcileMissed = true;
+        return;
+      }
       void this.render();
     }, RECONCILE_DEBOUNCE);
   }
 
+  // Catches up once a detail overlay is fully gone without a render of its
+  // own (closeDetail's no-change path, closeDraft's empty-title discard):
+  // scheduleReconcile() itself is reused so the usual debounce still applies,
+  // and it is a no-op when nothing was actually missed.
+  private catchUpReconcile(): void {
+    if (!this.reconcileMissed) return;
+    this.reconcileMissed = false;
+    this.scheduleReconcile();
+  }
+
   private async render(): Promise<void> {
     const seq = ++this.renderSeq;
+    this.reconcileMissed = false;
     await this.plugin.reloadSettings();
-    const { entries, roots } = await readVault(this.app);
+    await this.plugin.indexReady;
+    const entries = this.plugin.index.entries();
+    const roots = this.plugin.index.roots();
     if (seq !== this.renderSeq) return;
 
     const resolved = resolveProjectSettings(entries);
@@ -337,11 +428,16 @@ export class BoardView extends ItemView {
     for (const el of elements) this.elementByPath.set(el.paths.note, el);
     this.bodyByPath.clear();
     for (const entry of visible.entries) this.bodyByPath.set(entry.path, entry.body);
+    this.knownIds = new Set(
+      entries
+        .map((e) => e.frontmatter.ktm_id)
+        .filter((id): id is string => typeof id === 'string' && id.trim() !== ''),
+    );
     this.roots = visible.roots;
-    this.today = todayISO(this.contentEl.win);
+    this.today = todayISO((this.contentEl.win as KtmWindow).__ktmToday);
 
     const reconcile = await this.reconcileDone(elements);
-    if (reconcile.moved) {
+    if (reconcile.changed) {
       if (seq === this.renderSeq) await this.render();
       return;
     }
@@ -363,7 +459,10 @@ export class BoardView extends ItemView {
     const boardEl = this.contentEl.createDiv({ cls: 'ktm-board' });
     this.renderToolbar(boardEl, levels);
 
-    if (project && !folderExists(this.app, project.root)) {
+    // An empty ktm_root is a project with no Standardablage (011, Ergänzung
+    // 2026-09-25, S83 "Root-Grenzfälle"), not a missing folder: the error
+    // card is reserved for a configured, non-empty root that does not exist.
+    if (project && project.root && !folderExists(this.app, project.root)) {
       this.renderError(boardEl, project.root);
       return;
     }
@@ -375,7 +474,7 @@ export class BoardView extends ItemView {
       bottomLevel: bottomLevel(levels)?.key,
       doneLimit: this.doneLimit,
     });
-    this.showNotices([...resolved.notices, ...board.notices, ...reconcile.notices]);
+    this.showNotices([...resolved.notices, ...board.notices, ...reconcile.notices, ...this.legacyNotice()]);
 
     this.renderToday(boardEl, elements);
 
@@ -383,6 +482,16 @@ export class BoardView extends ItemView {
     for (const column of board.columns) {
       this.renderColumn(columnsEl, column, this.today);
     }
+  }
+
+  // "Bestand noch nicht übernommen" (011 S69, #769): a plain board notice,
+  // named the count of legacy 0.0.1 notes and the command that adopts them.
+  private legacyNotice(): string[] {
+    const count = this.plugin.legacyCount();
+    if (count === 0) return [];
+    return [
+      `Bestand noch nicht übernommen: ${count} Notizen. Befehl „Bestand übernehmen“ in der Befehlspalette.`,
+    ];
   }
 
   // Each distinct notice is surfaced once per view session; re-renders from the
@@ -477,36 +586,32 @@ export class BoardView extends ItemView {
     });
   }
 
-  // Keeps every element's folder location in step with its status, no matter
-  // who set it: a done element pulls into the Done mirror, an open one pulls
-  // back, and a container follows only once all its descendants are done. Runs
-  // on each read and on the debounced changed event, so an external edit lands
-  // within two seconds. Returns whether anything moved, so the caller re-reads
-  // the vault with the fresh paths before drawing, plus the notices for the
-  // locks it hit (open descendant, still-done ancestor) and for any move the
-  // plan could not carry out (a colliding target, 008 S47, F068 K3): that one
-  // move is skipped and reported, the rest of the plan still runs, and
-  // `moved` counts only the ones that actually succeeded, so a plan that only
-  // ever fails does not send render() into an endless retry loop.
-  private async reconcileDone(elements: BoardElement[]): Promise<{ moved: boolean; notices: string[] }> {
+  // Keeps `completed` in step with status, no matter who set it, purely as a
+  // field (011, Ablageregel 1): a closed status without one is stamped with
+  // today, an open one that still carries one has it cleared. Runs on each
+  // read and on the debounced changed event, so an external status edit lands
+  // within two seconds. The Done/-Ordner-Umzug itself no longer happens here
+  // (wissen #656 superseded): it hangs only on this element's own status
+  // change through the interactive paths, main.ts#fileByStatus. Returns
+  // whether anything changed, so the caller re-reads the vault before
+  // drawing, plus the notices for a write that failed (008 S46-style).
+  private async reconcileDone(elements: BoardElement[]): Promise<{ changed: boolean; notices: string[] }> {
     this.reconciling = true;
     try {
-      const plan = planDone(
-        elements.map((el) => this.doneElement(el)),
-        this.today,
-      );
-      const notices = [...plan.notices];
-      let moved = false;
-      for (const move of plan.moves) {
+      const notices: string[] = [];
+      let changed = false;
+      for (const el of elements) {
+        if (el.invalid) continue;
+        const change = reconcileCompleted({ done: this.doneElement(el).done, completed: el.completed }, this.today);
+        if (!change) continue;
         try {
-          await moveElement(this.app, move.from, move.to, move.parent);
-          if (move.frontmatter) await writeFrontmatter(this.app, move.toNotePath, move.frontmatter);
-          moved = true;
+          await writeFrontmatter(this.app, el.paths.note, change);
+          changed = true;
         } catch (err) {
-          notices.push(`Umzug übersprungen: ${move.from} → ${move.to} (${errorMessage(err)})`);
+          notices.push(`Aktualisierung übersprungen: ${el.paths.note} (${errorMessage(err)})`);
         }
       }
-      return { moved, notices };
+      return { changed, notices };
     } finally {
       this.reconciling = false;
     }
@@ -517,7 +622,7 @@ export class BoardView extends ItemView {
   // unknown status stays undefined and is left alone. guardMove and the drop
   // path keep using doneStatuses(), which stays column-based (#479).
   private doneElement(el: BoardElement): DoneElement {
-    const base = el.form === 'atomic' ? ATOMIC_BASE : matchRoot(el.paths.note, this.roots);
+    const base = el.form === 'atomic' ? ATOMIC_BASE : rootForPath(el.paths.note, this.roots);
     return {
       form: el.form,
       notePath: el.paths.note,
@@ -797,6 +902,7 @@ export class BoardView extends ItemView {
       ? { form: 'nested' as TaskForm, project: parent.project }
       : this.draftDefaults();
     const element: BoardElement = {
+      id: '',
       type,
       form: defaults.form,
       title: '',
@@ -804,7 +910,7 @@ export class BoardView extends ItemView {
       project: defaults.project,
       priority: DRAFT_PRIORITY,
       tags: [],
-      parents: parent ? [{ type: parent.type, title: parent.title, note: parent.paths.note }] : [],
+      parents: parent ? [{ id: parent.id, type: parent.type, title: parent.title, note: parent.paths.note }] : [],
       links: [],
       paths: { note: DRAFT_PATH },
     };
@@ -821,6 +927,10 @@ export class BoardView extends ItemView {
   private draftDefaults(): { form: TaskForm; project?: string; parentLabel: string } {
     const project = this.currentProject();
     if (project) {
+      // A project without a root has no Standardablage (011, Ergänzung
+      // 2026-09-25, S83): its draft goes atomic like "alle"/"intern", but
+      // keeps the project's own key so the new note still carries it (K30).
+      if (!project.root) return { form: 'atomic', project: project.key, parentLabel: 'Atomar' };
       return { form: 'nested', project: project.key, parentLabel: '' };
     }
     return { form: 'atomic', parentLabel: 'Atomar' };
@@ -857,9 +967,10 @@ export class BoardView extends ItemView {
       if (inherited) parents = [inherited];
       children = [source];
     } else {
-      parents = [{ type: source.type, title: source.title, note: source.paths.note }];
+      parents = [{ id: source.id, type: source.type, title: source.title, note: source.paths.note }];
     }
     const element: BoardElement = {
+      id: '',
       type: level,
       form: 'nested',
       title,
@@ -960,17 +1071,50 @@ export class BoardView extends ItemView {
     const showProject = this.view === VIEW_ALL && this.cardFields.includes('project');
     const ancestors = this.cardFields.includes('parents') ? this.ancestorChips(card) : [];
     renderCardFace(cardEl, card, this.cardFields, today, done, showProject, ancestors);
+
+    // "Ordner nicht eindeutig" (011 S91, K32): a card whose own folder holds
+    // two or more element notes with no single one of them recognized as its
+    // owner. Like "ungültig" it is a word in the metazeile, in the orange
+    // signal color instead of red (DESIGN.md Karte, addendum 011).
+    if (card.form !== 'atomic' && isAmbiguousFolder(card.paths.folder, [...this.elementByPath.values()], this.roots)) {
+      cardEl.setAttribute('data-placement-notice', 'true');
+      const meta = cardEl.querySelector<HTMLElement>('.ktm-card-meta') ?? cardEl.createDiv({ cls: 'ktm-card-meta' });
+      meta.createSpan({ cls: 'ktm-card-meta-item ktm-card-placement-notice', text: 'Ordner nicht eindeutig' });
+    }
   }
 
+  // DESIGN.md "Ungültige Karte": the meta row keeps reading exactly
+  // "ungültig" in every case (011); the reason (missing field, or "Kennung
+  // doppelt") only shows as a tooltip/aria-label and as data-invalid-reason
+  // (K10-K13). A duplicate additionally offers "Neue Kennung vergeben"
+  // (011 S59): it writes only `ktm_id` to a fresh, vault-unique value.
   private renderInvalidCard(parent: HTMLElement, card: BoardElement): void {
+    const reason = card.invalidReason ?? '';
     const cardEl = parent.createDiv({
       cls: 'ktm-card',
-      attr: { 'data-invalid': 'true', 'data-card-id': card.paths.note, tabindex: '0' },
+      attr: {
+        'data-invalid': 'true',
+        'data-card-id': card.paths.note,
+        'data-invalid-reason': reason,
+        tabindex: '0',
+      },
     });
     const titleRow = cardEl.createDiv({ cls: 'ktm-card-titlerow', attr: { title: card.title } });
     titleRow.createSpan({ cls: 'ktm-card-title', text: card.title });
-    const meta = cardEl.createDiv({ cls: 'ktm-card-meta' });
+    const meta = cardEl.createDiv({
+      cls: 'ktm-card-meta',
+      attr: { title: reason, 'aria-label': reason },
+    });
     meta.createSpan({ text: 'ungültig' });
+    if (card.duplicate) {
+      const button = cardEl.createEl('button', { cls: 'ktm-button', text: 'Neue Kennung vergeben' });
+      this.registerDomEvent(button, 'click', (ev) => {
+        ev.stopPropagation();
+        void this.persist('Neue Kennung vergeben', card.paths.note, async () => {
+          await writeFrontmatter(this.app, card.paths.note, { ktm_id: newId(this.knownIds) });
+        });
+      });
+    }
   }
 
   // One chip per level above the card's own on which it has an ancestor, top
@@ -1030,7 +1174,12 @@ export class BoardView extends ItemView {
     }
     const change = this.withCanonicalStatus(element, move.change);
     const ok = await this.persist('Verschieben', path, () => writeFrontmatter(this.app, path, change));
-    if (ok) this.focusCard(path);
+    if (!ok) return;
+    this.focusCard(path);
+    // Ablageregel 1 (011, Ergänzung 2026-09-25): the status write above is
+    // enough on its own now — main.ts#placeElement reacts to the changed
+    // `status` field itself and files a closed element under Done/, or back
+    // out of it, without a separate call here.
   }
 
   private focusCard(path: string): void {
@@ -1171,7 +1320,8 @@ export class BoardView extends ItemView {
     if (!element) return;
 
     let statusChange: FrontmatterChange = {};
-    if (toStatus !== fromStatus) {
+    const statusChanged = toStatus !== fromStatus;
+    if (statusChanged) {
       const move = moveToColumn(fromStatus, toStatus, this.columns, this.today);
       if (!move) return;
       const targetDone = this.doneStatuses(element.project).has(move.targetStatus);
@@ -1210,7 +1360,8 @@ export class BoardView extends ItemView {
       }
     });
 
-    if (ok) this.focusCard(path);
+    if (!ok) return;
+    this.focusCard(path);
   }
 
   private endDrag(): void {
@@ -1275,6 +1426,8 @@ export class BoardView extends ItemView {
         searchElements: (level, query) => this.searchElements(level, element, query),
         createStackedElement: (level, ancestor, title) =>
           this.openStackedDraft(level, ancestor, title, element),
+        changeLevel: (type, parentId) => this.changeLevel(element, type, parentId),
+        setPlacement: (value) => this.setPlacement(element, value),
       },
       {
         projects: this.projects.map((p) => p.key),
@@ -1300,7 +1453,16 @@ export class BoardView extends ItemView {
     });
     resize.observe(boardEl);
 
-    this.detail = { detail, path: element.paths.note, cardEl, coverEl, resize, draft, stackedFrom };
+    this.detail = {
+      detail,
+      path: element.paths.note,
+      id: draft ? undefined : element.id,
+      cardEl,
+      coverEl,
+      resize,
+      draft,
+      stackedFrom,
+    };
 
     if (stackedFrom) {
       cardEl.style.width = `${this.expandedWidth(boardEl, true)}px`;
@@ -1448,6 +1610,7 @@ export class BoardView extends ItemView {
       this.removeChild(open.detail);
       open.coverEl.remove();
       open.cardEl.remove();
+      this.catchUpReconcile();
       return;
     }
 
@@ -1528,6 +1691,9 @@ export class BoardView extends ItemView {
       this.removeChild(open.detail);
       open.coverEl.remove();
       open.cardEl.remove();
+      // Ablageregel 1 (011, Ergänzung 2026-09-25): the status write above,
+      // like any other write, already reaches main.ts#placeElement through
+      // the changed `status` field, so nothing further is filed here.
     } else {
       // S46/K1: the write failed partway; the card stays open with its
       // unsaved draft, the board underneath was already redrawn by persist().
@@ -1552,6 +1718,7 @@ export class BoardView extends ItemView {
       open.cardEl.remove();
       if (!base) {
         open.coverEl.remove();
+        this.catchUpReconcile();
         return;
       }
       // K4: an empty title creates nothing; the card beneath becomes
@@ -1638,20 +1805,34 @@ export class BoardView extends ItemView {
       return { path: placement.path, ok: false, message: placement.missingRoot };
     }
 
+    // parent/parent_link go into the note in the same step as the rest of
+    // the Pflichtfelder (011, "created und parent/parent_link in einem
+    // Schritt"): a wikilink relative to the not-yet-created note, with the
+    // parent's title as alias (011, Ergänzung 2026-09-25, "parent_link" ist
+    // Obsidians eigene Alias-Schreibweise).
+    let parentLink: string | undefined;
+    if (placement.parent && placement.parentNote) {
+      const parentTitle = this.elementByPath.get(placement.parentNote)?.title;
+      if (parentTitle !== undefined) {
+        parentLink = parentLinkTo(this.app, placement.parentNote, placement.path, parentTitle);
+      }
+    }
     const content = noteContent({
+      id: newId(this.knownIds),
       type: target.type,
       title: target.title,
       status: target.status,
-      project: placement.project,
+      project: placement.project || INTERNAL_PROJECT,
+      created: this.today,
+      parent: placement.parent,
+      parentLink,
     });
 
     this.reconciling = true;
     try {
       await createNote(this.app, placement.path, content);
-      const frontmatter: Record<string, string | null> = {};
-      if (placement.parent) frontmatter.parent = placement.parent;
       const changes = detail.changes();
-      if (changes) Object.assign(frontmatter, changes.frontmatter);
+      const frontmatter: Record<string, string | null> = { ...changes?.frontmatter };
       if (Object.keys(frontmatter).length > 0) {
         await writeFrontmatter(this.app, placement.path, frontmatter);
       }
@@ -1677,16 +1858,17 @@ export class BoardView extends ItemView {
       levelsFor: (project) => this.projectSettings(project).levels,
       rootExists: (root) => folderExists(this.app, root),
       siblings: (folder) => this.siblingNames(folder),
-      linkTo: (target, source) => this.wikilinkTo(target, source),
       childrenOf: (element) => this.childrenOf(element),
+      rules: {
+        renameOnTitleChange: this.plugin.settings.renameOnTitleChange ?? false,
+      },
+      linkTo: (targetNote, sourceNote, title) => parentLinkTo(this.app, targetNote, sourceNote, title),
     };
   }
 
   // Places the draft according to its chosen form (008 S21-S23, F055,
   // core/refile.ts#planDraftPlacement).
-  private draftPlacement(
-    target: DraftTarget,
-  ): { path: string; project?: string; parent?: string; missingRoot?: string } | undefined {
+  private draftPlacement(target: DraftTarget): DraftPlacement | undefined {
     return planDraftPlacement(target, this.refileEnv(), this.today);
   }
 
@@ -1697,16 +1879,64 @@ export class BoardView extends ItemView {
     return planFiling(element, refile, this.refileEnv());
   }
 
-  // A scalar `parent` value (008 S29, wissen #500: bewusst quotiert statt
-  // einer Liste): the wikilink Obsidian's own link format would produce,
-  // resolved relative to the writing note so a vault-unique basename stays
-  // short.
-  private wikilinkTo(targetNotePath: string, sourceNotePath: string): string {
-    const file = this.app.vault.getFileByPath(targetNotePath);
-    const linktext = file
-      ? this.app.metadataCache.fileToLinktext(file, sourceNotePath, true)
-      : baseName(targetNotePath).replace(/\.md$/, '');
-    return JSON.stringify(`[[${linktext}]]`);
+  // A level pick at or above the parent's height (011, Ergänzung
+  // 2026-09-25, "Ebene wechseln", CardDetail#pickLevel): writes `type` and
+  // `parent`/`parent_link` right away, the move that follows is
+  // main.ts#placeElement's job once the write lands back through
+  // metadataCache.on('changed'). Wrapped under {@link runReconciling} so
+  // that move never races the open card's own render (wissen #584).
+  private async changeLevel(element: BoardElement, type: ElementType, parentId: string | null): Promise<boolean> {
+    const frontmatter: FrontmatterChange = { type };
+    if (parentId === null) {
+      frontmatter.parent = null;
+      frontmatter.parent_link = null;
+    } else {
+      frontmatter.parent = parentId;
+      const ancestor = [...this.elementByPath.values()].find((e) => e.id === parentId);
+      const link = ancestor ? parentLinkTo(this.app, ancestor.paths.note, element.paths.note, ancestor.title) : undefined;
+      if (link) frontmatter.parent_link = link;
+    }
+    try {
+      await this.runReconciling(() => writeFrontmatter(this.app, element.paths.note, frontmatter));
+      return true;
+    } catch (err) {
+      this.failureNotice('Ebene ändern', element.paths.note, errorMessage(err));
+      return false;
+    }
+  }
+
+  // "Ablage automatisch" (011, Ergänzung 2026-09-25): writes the literal
+  // string so a Karte's Zustand is always visible in the frontmatter (K24),
+  // never just a cleared key.
+  private async setPlacement(element: BoardElement, value: 'auto' | 'manual'): Promise<boolean> {
+    try {
+      await this.runReconciling(() =>
+        writeFrontmatter(this.app, element.paths.note, { ktm_placement: value }),
+      );
+      return true;
+    } catch (err) {
+      this.failureNotice('Ablage automatisch', element.paths.note, errorMessage(err));
+      return false;
+    }
+  }
+
+  // Lets an outside caller (main.ts#placeElement) run a move under this
+  // board's own reconciling guard (wissen #584): reentrant, so a move
+  // triggered by a write this view itself already wrapped in reconciling
+  // (closeDetail, changeLevel, setPlacement) does not toggle the flag off
+  // early. Only the outermost call flips it back and catches up a reconcile
+  // that was missed while it ran.
+  async runReconciling<T>(fn: () => Promise<T>): Promise<T> {
+    const already = this.reconciling;
+    if (!already) this.reconciling = true;
+    try {
+      return await fn();
+    } finally {
+      if (!already) {
+        this.reconciling = false;
+        this.catchUpReconcile();
+      }
+    }
   }
 
   private siblingNames(folder: string): string[] {
@@ -1791,6 +2021,7 @@ export class BoardView extends ItemView {
       return rankA !== rankB ? rankA - rankB : a.paths.note.localeCompare(b.paths.note);
     });
     return matches.slice(0, 5).map((el) => ({
+      id: el.id,
       path: el.paths.note,
       title: el.title,
       project: el.project,
@@ -1869,11 +2100,4 @@ function dirOf(path: string): string {
 // the name already ends in one.
 function levelPlural(name: string): string {
   return name.endsWith('s') ? name : `${name}s`;
-}
-
-function matchRoot(notePath: string, roots: ProjectRoot[]): string | undefined {
-  return roots
-    .map((r) => r.root.replace(/\/+$/, ''))
-    .filter((root) => notePath.startsWith(root + '/'))
-    .sort((a, b) => b.length - a.length)[0];
 }

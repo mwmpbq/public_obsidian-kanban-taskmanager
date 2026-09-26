@@ -36,23 +36,20 @@ export function allViewLevels(mode: 'rank' | 'bottom', generalLevels: Level[]): 
 
 /**
  * Levels the field "Ebene" may offer for an element, from `levels` (top
- * first, as stored): deeper than its immediate parent, shallower than every
- * direct child, so the level order with both stays intact (008 S23/S40, 009
- * addendum 2026-09-20). Without a parent, every level up to the shallowest
- * child's is offered; without children, every level below the parent is.
+ * first, as stored): shallower than every direct child, so a level change
+ * never strands one below its new level (008 S23/S40). A level at or above
+ * the current parent's height is offered too now (009, addendum
+ * 2026-09-25 changed): picking one opens the ParentDialog instead of
+ * silently reparenting (CardDetail#pickLevel), so the barrier here is only
+ * ever the children's, never the parent's.
  */
-export function offerableLevels(
-  levels: Level[],
-  parentType: ElementType | undefined,
-  childTypes: ElementType[],
-): Level[] {
+export function offerableLevels(levels: Level[], childTypes: ElementType[]): Level[] {
   const indexOf = (key: ElementType): number => levels.findIndex((l) => l.key === key);
-  const parentIndex = parentType !== undefined ? indexOf(parentType) : -1;
   const childBarrier = childTypes.reduce((min, type) => {
     const idx = indexOf(type);
     return idx === -1 ? min : Math.min(min, idx);
   }, levels.length);
-  return levels.filter((_, i) => i > parentIndex && i < childBarrier);
+  return levels.filter((_, i) => i < childBarrier);
 }
 
 // Rank from the bottom of `list` (bottom = 0), or undefined if `key` is not

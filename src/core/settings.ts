@@ -25,6 +25,12 @@ export interface GeneralSettings {
   openLevel?: string;
   expandedWidthFactor?: number;
   shortInChips?: boolean;
+  /** "Abgeschlossene nach Done/ verschieben" (011, Ablageregel 1), Standard an; read via `?? true`. */
+  moveDoneToFolder?: boolean;
+  /** "Datei und Ordner beim Umbenennen des Titels mit umbenennen" (011, Ablageregel 3), Standard aus; read via `?? false`. */
+  renameOnTitleChange?: boolean;
+  /** The exact text "LLM-Verweis einrichten" last appended to CLAUDE.md, so "LLM-Verweis entfernen" can cut precisely that back off (011, Ergänzung 2026-09-25). */
+  llmLink?: { appended: string; created: boolean };
 }
 
 export interface Level {
@@ -272,9 +278,17 @@ export function resolveProjectSettings(entries: FileEntry[]): ResolvedProjects {
 
 // A done column that is not one of the project's own columns marks nothing as
 // done and is almost always a typo; the project stays, but the note and the
-// stray name are named so it can be fixed.
+// stray name are named so it can be fixed. A `ktm_columns` already in the new
+// `"key | name"` form (006 addendum 2026-09-22) carries the done/wont-do role
+// in the key itself; a leftover `ktm_done_columns` next to it (011, Ergänzung
+// 2026-09-25, "übrig gebliebenes ktm_done_columns") is no longer evaluated at
+// all and gets a single "veraltet" notice instead of one dangling-name notice
+// per stray entry.
 function danglingDoneNotices(project: ProjectSettings): string[] {
   if (!project.columns || !project.doneColumns) return [];
+  if (project.columns.every((c) => c.includes('|'))) {
+    return [`Projektnotiz ${project.path}: „ktm_done_columns“ ist veraltet und wird ignoriert.`];
+  }
   const columnSlugs = new Set(project.columns.map(slugifyStatus));
   return project.doneColumns
     .filter((name) => !columnSlugs.has(slugifyStatus(name)))
@@ -285,9 +299,10 @@ function danglingDoneNotices(project: ProjectSettings): string[] {
 }
 
 /**
- * Removes every entry and root belonging to a hidden project (F085, 006
- * addendum 2026-09-24, K18-K20): an entry under a hidden project's root, or
- * an own-folder/atomic entry whose `project` field names a hidden key. Called
+ * Removes every entry belonging to a hidden project (F085, 006 addendum
+ * 2026-09-24, K18-K20), by its `project` frontmatter field alone (011,
+ * "Ausgeblendete Projekte werden über `project` gefiltert" — no more root
+ * path involved, an element's physical location carries no meaning). Called
  * once before {@link resolveColumns}-style consumption (`readElements`,
  * `today`), so "alle", "Heute", the view dropdown and the hint area never see
  * a hidden project's tasks, without touching every one of those call sites.
@@ -300,12 +315,8 @@ export function withoutHiddenProjects(
   const hiddenProjects = projects.filter((p) => p.hidden);
   if (hiddenProjects.length === 0) return { entries, roots };
   const hiddenKeys = new Set(hiddenProjects.map((p) => p.key));
-  const hiddenRoots = hiddenProjects.map((p) => p.root.replace(/\/+$/, ''));
-  const underHiddenRoot = (path: string): boolean =>
-    hiddenRoots.some((root) => root !== '' && (path === root || path.startsWith(root + '/')));
   return {
     entries: entries.filter((e) => {
-      if (underHiddenRoot(e.path)) return false;
       const project = e.frontmatter.project;
       return !(typeof project === 'string' && hiddenKeys.has(project));
     }),
@@ -317,17 +328,27 @@ const INVALID_ROOT_PATTERN = /\\|^\/|^[a-zA-Z]:/;
 
 /**
  * Rejects a `ktm_root` that could escape the vault or land inside Obsidian's
- * own config folder (006 S42, F071 K1/K2): a backslash (Windows separator), a
+ * own config folder (006 S42, F071 K1/K2, sharpened 011 Ergänzung 2026-09-25
+ * "Konfigurationsordner als Root"): a backslash (Windows separator), a
  * leading slash or drive letter (absolute outside the vault), a `..`
- * segment anywhere, or a first segment `.obsidian`. A trailing slash is
+ * segment anywhere, or a first segment `.obsidian` — checked case-insensitive
+ * and after stripping a repeated leading `./`, so `.OBSIDIAN/x` and
+ * `./.obsidian/x` are rejected just like `.obsidian/x`. A trailing slash is
  * stripped before the segment check, since the rest of the code trims it too
- * (parseColumns etc.); an empty root stays valid here, it is a separate,
- * not-yet-decided concern ("ausserhalb").
+ * (parseColumns etc.); an empty root stays valid here — a project without a
+ * root simply has no Standardablage (011, "Leerer ktm_root").
  */
 export function invalidRoot(root: string): boolean {
-  if (INVALID_ROOT_PATTERN.test(root)) return true;
-  const segments = root.replace(/\/+$/, '').split('/');
+  const normalized = normalizeRootForCheck(root);
+  if (INVALID_ROOT_PATTERN.test(normalized)) return true;
+  const segments = normalized.replace(/\/+$/, '').split('/');
   return segments.includes('..') || segments[0] === '.obsidian';
+}
+
+function normalizeRootForCheck(root: string): string {
+  let normalized = root.toLowerCase();
+  while (normalized.startsWith('./')) normalized = normalized.slice(2);
+  return normalized;
 }
 
 const COLUMN_KEY_PATTERN = /^[a-z][a-z0-9_-]*$/;

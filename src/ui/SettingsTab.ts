@@ -8,9 +8,9 @@ import {
   getIconIds,
   setIcon,
 } from 'obsidian';
-import { createNote, readVault, writeFrontmatter } from '../adapters/obsidian';
+import { createNote, writeFrontmatter } from '../adapters/obsidian';
 import { flowList, yamlScalar } from '../core/frontmatter';
-import type { BoardElement, FileEntry } from '../core/model';
+import type { BoardElement, FileEntry, ProjectRoot } from '../core/model';
 import { readElements } from '../core/read';
 import {
   CARD_FIELDS,
@@ -133,6 +133,7 @@ export class KtmSettingTab extends PluginSettingTab {
   private columnsSectionEl?: HTMLElement;
   private levelEntries: FileEntry[] = [];
   private projects: ProjectSettings[] = [];
+  private roots: ProjectRoot[] = [];
   // Every level (task, feature, epic), read once per display() the same way
   // BoardView#render does (F070: removeColumn/changeColumnRole need to count
   // a column's members before touching it).
@@ -163,7 +164,10 @@ export class KtmSettingTab extends PluginSettingTab {
     containerEl.empty();
     const root = containerEl.createDiv({ cls: 'ktm-settings' });
 
-    const { entries, roots } = await readVault(this.app);
+    await this.plugin.indexReady;
+    const entries = this.plugin.index.entries();
+    const roots = this.plugin.index.roots();
+    this.roots = roots;
     this.levelEntries = entries;
     this.projects = resolveProjectSettings(entries).projects;
     if (this.scope !== SCOPE_GENERAL && !this.projects.some((p) => p.key === this.scope)) {
@@ -378,6 +382,40 @@ export class KtmSettingTab extends PluginSettingTab {
     });
 
     this.renderColumnsSection(container);
+    this.renderRefileRulesSection(container);
+  }
+
+  // Three general-only Ablageregeln (011, Abschnitt "Projekte & Ablage"),
+  // read via `??` rather than DEFAULT_SETTINGS (K18: a fresh vault without
+  // data.json shows an/an/aus).
+  private renderRefileRulesSection(container: HTMLElement): void {
+    const moveDone = new Setting(container)
+      .setName('Abgeschlossene nach Done/ verschieben')
+      .setDesc('Ein abgeschlossenes Element zieht in einen Done/-Spiegel unter seinem Root.');
+    this.markGlobalOnlyRow(moveDone, 'moveDoneToFolder');
+    moveDone.addToggle((toggle) =>
+      toggle.setValue(this.plugin.settings.moveDoneToFolder ?? true).onChange(async (value) => {
+        this.plugin.settings.moveDoneToFolder = value;
+        await this.plugin.saveData(this.plugin.settings);
+      }),
+    );
+    this.lockIfGlobalOnly(moveDone);
+
+    // Ablageregel 2 ("Ordner beim Einordnen und beim Projektwechsel
+    // mitziehen") ist abgelöst: der Ort folgt jetzt immer dem Parent (011,
+    // Ergänzung 2026-09-25), es gibt keinen Schalter mehr dafür.
+
+    const renameOnTitle = new Setting(container)
+      .setName('Datei und Ordner beim Umbenennen des Titels mit umbenennen')
+      .setDesc('Ein geänderter Titel benennt Datei und Ordner nach demselben Muster wie beim Anlegen um.');
+    this.markGlobalOnlyRow(renameOnTitle, 'renameOnTitleChange');
+    renameOnTitle.addToggle((toggle) =>
+      toggle.setValue(this.plugin.settings.renameOnTitleChange ?? false).onChange(async (value) => {
+        this.plugin.settings.renameOnTitleChange = value;
+        await this.plugin.saveData(this.plugin.settings);
+      }),
+    );
+    this.lockIfGlobalOnly(renameOnTitle);
   }
 
   // One row of the project list, shared for Internal (synthetic, no own entry
@@ -631,6 +669,9 @@ export class KtmSettingTab extends PluginSettingTab {
     if (target === null) return;
 
     for (const member of members) {
+      // The status write alone is enough now (011, Ergänzung 2026-09-25):
+      // main.ts#placeElement reacts to the changed `status` field itself and
+      // files a closed member under Done/ without a separate call here.
       await writeFrontmatter(this.app, member.paths.note, { status: target });
     }
     await this.persistColumns(this.columns.filter((_, i) => i !== index));
@@ -669,6 +710,9 @@ export class KtmSettingTab extends PluginSettingTab {
         return;
       }
       for (const member of members) {
+        // Switching to an open role always reopens (011, Ablageregel 1); the
+        // status write alone triggers main.ts#placeElement to move the
+        // member back out of Done/.
         await writeFrontmatter(this.app, member.paths.note, { status: newKey });
       }
       const next = [...this.columns];

@@ -10,6 +10,7 @@
   --ktm-signal-overdue: var(--color-red);
   --ktm-signal-today: var(--text-accent);
   --ktm-signal-invalid: var(--color-red);
+  --ktm-signal-placement: var(--color-orange);
   --ktm-signal-priority-1: rgba(var(--color-orange-rgb), 0.7);
   --ktm-signal-priority-2: var(--text-muted);
   --ktm-signal-priority-4: var(--text-faint);
@@ -541,6 +542,10 @@
   color: var(--ktm-signal-invalid);
 }
 
+.ktm-card-placement-notice {
+  color: var(--ktm-signal-placement);
+}
+
 .ktm-error-wrap {
   flex: 1;
   display: flex;
@@ -758,8 +763,16 @@
   font-size: var(--font-ui-small);
 }
 
+.ktm-folder-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-4-3);
+}
+
 .ktm-folder-value {
   position: relative;
+  min-width: 0;
   border-radius: var(--radius-s);
   cursor: pointer;
 }
@@ -767,6 +780,15 @@
 .ktm-folder-value:hover,
 .ktm-folder-value[data-editing='true'] {
   background: var(--background-modifier-hover);
+}
+
+.ktm-placement-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--size-4-1);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
 }
 
 .ktm-folder-path {

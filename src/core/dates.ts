@@ -22,6 +22,18 @@ function pad(n: number): string {
   return String(n).padStart(2, '0');
 }
 
+/**
+ * Today's date, `YYYY-MM-DD`: `override` (the caller's `window.__ktmToday`,
+ * F088/wissen #707) when it parses as one, otherwise the system date.
+ * Deliberately takes the raw value rather than a `Window`, so this stays
+ * usable from both BoardView (has one) and main.ts (a plugin, not a view).
+ */
+export function todayISO(override?: unknown): string {
+  if (typeof override === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(override)) return override;
+  const now = new Date();
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
 export function dayDiff(dateISO: string, todayISO: string): number | undefined {
   const a = parse(dateISO);
   const b = parse(todayISO);

@@ -7,6 +7,7 @@ import {
   setIcon,
   type TFile,
   TFolder,
+  ToggleComponent,
 } from 'obsidian';
 import {
   dueState,
@@ -18,9 +19,10 @@ import {
 } from '../core/dates';
 import { offerableLevels } from '../core/board';
 import { flowList, yamlScalar } from '../core/frontmatter';
-import type { BoardElement, ElementType, FreeLink, ParentRef } from '../core/model';
+import type { BoardElement, ElementPaths, ElementType, FreeLink, ParentRef } from '../core/model';
 import { type Column, isBottomLevel, type Level, type LinkKind } from '../core/settings';
 import { toggleTaskLine } from '../core/tasklist';
+import { ParentDialog } from './ParentDialog';
 
 // The edits the detail view collects and writes when it closes. `body` is the
 // markdown below the frontmatter; `status`/`priority`/`planned`/`due` are plain
@@ -43,8 +45,10 @@ interface Draft {
   links: FreeLink[];
   // A parent picked in this session from the link-menu's element search
   // (F052 K1/K2), not present in `element.parents`: effectiveParents() shows
-  // it right away, ahead of the refile that only happens on close.
-  newParent?: ParentRef;
+  // it right away, ahead of the refile that only happens on close. `null`
+  // (011, Ergänzung 2026-09-25, pickLevel) means the level dialog confirmed
+  // "ohne Parent"; `undefined` means untouched this session.
+  newParent?: ParentRef | null;
   // The Ordner-Feld's picked target this session (F054): `undefined` means
   // untouched, a path means a chosen own folder, `null` means "Standardablage"
   // picked explicitly. Both defined values differ from the initial `undefined`
@@ -113,6 +117,7 @@ export interface DetailOptions {
 // from its already-loaded elements, so this component never imports obsidian
 // vault APIs for it.
 export interface LinkSearchResult {
+  id: string;
   path: string;
   title: string;
   project?: string;
@@ -152,6 +157,15 @@ export interface CardDetailHost {
   // level ranks above its own (the open card becomes its child),
   // else the open card itself becomes the draft's parent.
   createStackedElement(level: ElementType, ancestor: boolean, title: string): void;
+  // Writes `type` and `parent`/`parent_link` immediately, once a level at or
+  // above the current parent's height is confirmed in the ParentDialog (011,
+  // Ergänzung 2026-09-25, "Ebene wechseln"): `parentId` null clears the
+  // parent. Resolves false on a failed write, so the field can be rolled
+  // back instead of pretending the change happened.
+  changeLevel(type: ElementType, parentId: string | null): Promise<boolean>;
+  // Writes `ktm_placement` immediately when the "Ablage automatisch" toggle
+  // is flipped (011, Ergänzung 2026-09-25, "Von Hand verschoben"/"Zurück").
+  setPlacement(value: 'auto' | 'manual'): Promise<boolean>;
 }
 
 const LEVEL_LABEL: Record<ElementType, string> = {
@@ -315,6 +329,16 @@ export class CardDetail extends Component {
     this.repaintLinks();
   }
 
+  // Patches the element's own note/folder location after an external rename
+  // or move (011 K5-K8, BoardView#retargetDetail): only the folder field is
+  // repainted, via the same paintFolder() a folder-picker pick already uses,
+  // so an edit in progress elsewhere on the card (draft.*) is untouched.
+  refreshLocation(paths: ElementPaths, ownFolder: boolean): void {
+    this.element.paths = paths;
+    this.element.ownFolder = ownFolder;
+    if (this.element.form !== 'atomic') this.paintFolder();
+  }
+
   changes(): DetailChanges | null {
     if (this.editingBody) this.draft.body = this.descriptionEdit.value;
     if (this.titleEdit) this.commitTitleEdit();
@@ -432,7 +456,33 @@ export class CardDetail extends Component {
     this.paintTags();
 
     fields.createSpan({ cls: 'ktm-label', text: 'Ordner' });
-    this.renderFolderField(fields.createSpan({ cls: 'ktm-value ktm-folder-value ktm-field-span' }));
+    const folderRow = fields.createDiv({ cls: 'ktm-value ktm-field-span ktm-folder-row' });
+    this.renderFolderField(folderRow.createSpan({ cls: 'ktm-folder-value' }));
+    this.renderPlacementToggle(folderRow);
+  }
+
+  // "Ablage automatisch" (011, Ergänzung 2026-09-25): a toggle next to the
+  // Ordner-Feld, wired straight to host.setPlacement — no draft, no Speichern-
+  // Button, it wirkt sofort like every other immediate write in this package
+  // (changeLevel). Absent on a draft, which has no note yet to place.
+  private renderPlacementToggle(parent: HTMLElement): void {
+    if (this.isDraft) return;
+    const wrap = parent.createSpan({ cls: 'ktm-placement-toggle', attr: { 'data-placement': this.element.placement ?? 'auto' } });
+    wrap.createSpan({ cls: 'ktm-label', text: 'Ablage automatisch' });
+    const toggle = new ToggleComponent(wrap);
+    toggle.setValue((this.element.placement ?? 'auto') !== 'manual');
+    toggle.onChange((value) => {
+      void (async () => {
+        const target = value ? 'auto' : 'manual';
+        const ok = await this.host.setPlacement(target);
+        if (!ok) {
+          toggle.setValue(!value);
+          return;
+        }
+        this.element.placement = target;
+        wrap.setAttribute('data-placement', target);
+      })();
+    });
   }
 
   // Idle state of the Kurzname field (S41/K1): a chip-free text value like the
@@ -797,29 +847,70 @@ export class CardDetail extends Component {
 
   // On an atomic task the level is fixed to the project's bottom level (002
   // S28, K7; 009 addendum 2026-09-20): embedding it under an ancestor goes
-  // through parent, not this field. Otherwise the offer follows the
-  // level order with the element's own parent and children (008 S23/S40,
-  // core/board.ts#offerableLevels).
+  // through parent, not this field. Otherwise the offer follows only the
+  // children's barrier (008 S23/S40, 009 addendum 2026-09-25 changed,
+  // core/board.ts#offerableLevels): a level at or above the current
+  // parent's height is offered too, but picking one opens the ParentDialog
+  // (below) instead of going through the deferred draft/refile path.
   private renderLevel(parent: HTMLElement): void {
     const dropdown = new DropdownComponent(parent);
     const atomic = this.element.form === 'atomic';
     const bottom = this.options.levels[this.options.levels.length - 1];
-    const levels = atomic
-      ? bottom
-        ? [bottom]
-        : []
-      : offerableLevels(
-          this.options.levels,
-          this.effectiveParents()[0]?.type,
-          this.children.map((c) => c.type),
-        );
+    const levels = atomic ? (bottom ? [bottom] : []) : offerableLevels(this.options.levels, this.children.map((c) => c.type));
     for (const level of levels) dropdown.addOption(level.key, level.name);
     const current = levels.find((l) => l.key === this.draft.type) ?? bottom;
     if (current) dropdown.setValue(current.key);
     dropdown.onChange((value) => {
-      this.draft.type = value;
+      if (this.isDraft || atomic) {
+        this.draft.type = value;
+        return;
+      }
+      void this.pickLevel(value, dropdown);
     });
     this.addSelectChevron(parent);
+  }
+
+  // A level pick at or above the current parent's height (011, Ergänzung
+  // 2026-09-25, "Ebene wechseln"): asks {@link ParentDialog} for the new
+  // parent, proposing the nearest ancestor whose own level ranks strictly
+  // above the picked one ("passender Vorfahre"), "ohne Parent" otherwise.
+  // Confirming writes through host.changeLevel immediately and folds the
+  // result into `draft`/`original` so closing the card does not file it a
+  // second time; cancelling restores the dropdown to the level it had
+  // before. A level below the parent's height (or without a parent at all)
+  // never opens the dialog: it stays on the deferred draft/refile path.
+  private async pickLevel(value: ElementType, dropdown: DropdownComponent): Promise<void> {
+    const levels = this.options.levels;
+    const indexOf = (key: ElementType): number => levels.findIndex((l) => l.key === key);
+    const selectedIdx = indexOf(value);
+    const chain = this.effectiveParents();
+    const parent = chain[0];
+    const atHeightOrAbove = parent !== undefined && selectedIdx <= indexOf(parent.type);
+    if (!atHeightOrAbove) {
+      this.draft.type = value;
+      return;
+    }
+    const candidates = chain.filter((p) => indexOf(p.type) < selectedIdx);
+    const chosen = await ParentDialog.ask(this.app, {
+      levelName: levels.find((l) => l.key === value)?.name ?? value,
+      candidates: candidates.map((p) => ({ id: p.id, label: `${parentLabel(p, levels)}: ${p.title}` })),
+    });
+    if (chosen === undefined) {
+      dropdown.setValue(this.draft.type);
+      return;
+    }
+    const ok = await this.host.changeLevel(value, chosen);
+    if (!ok) {
+      dropdown.setValue(this.draft.type);
+      return;
+    }
+    this.draft.type = value;
+    this.original.type = value;
+    const ancestor = chosen ? candidates.find((p) => p.id === chosen) : undefined;
+    this.draft.newParent = ancestor ?? null;
+    this.draft.parentLabel = ancestor ? `${parentLabel(ancestor, levels)}: ${ancestor.title}` : '';
+    this.original.parentLabel = this.draft.parentLabel;
+    this.repaintLinks();
   }
 
   private renderTitle(parent: HTMLElement): void {
@@ -1231,7 +1322,7 @@ export class CardDetail extends Component {
   // cross was clicked), in which case it is truncated to the ancestor that
   // label now names — or emptied for the root label '' (F051 K4/K5).
   private effectiveParents(): ParentRef[] {
-    if (this.draft.newParent) return [this.draft.newParent];
+    if (this.draft.newParent !== undefined) return this.draft.newParent ? [this.draft.newParent] : [];
     if (this.draft.parentLabel === this.original.parentLabel) return this.element.parents;
     const idx = this.element.parents.findIndex(
       (p) => parentFolderLabelFor(p, this.options.levels) === this.draft.parentLabel,
@@ -1567,7 +1658,7 @@ export class CardDetail extends Component {
   // the actual refile happens through the existing parentLabel path on close
   // (wissen #540).
   private pickParent(level: ElementType, levelLabel: string, res: LinkSearchResult): void {
-    this.draft.newParent = { type: level, title: res.title, note: res.path };
+    this.draft.newParent = { id: res.id, type: level, title: res.title, note: res.path };
     this.draft.parentLabel = `${levelLabel}: ${res.title}`;
     // A draft set to "Atomar" via the folder field falls back to
     // Standardablage when setting a parent (008 S22); a draft whose

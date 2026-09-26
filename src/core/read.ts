@@ -1,3 +1,4 @@
+import { isValidId } from './ids';
 import type {
   BoardElement,
   Checklist,
@@ -10,9 +11,12 @@ import type {
 import { bottomLevel, DEFAULT_LEVELS, type Level, type LinkKind, resolveLinkKinds } from './settings';
 
 const ATOMIC_PREFIX = '_Tasks/Atomic/';
-const ARCHIVE_SEGMENT = 'Archive';
-const DONE_SEGMENT = 'Done';
 const DEFAULT_PRIORITY = 3;
+// The literal `project` value an element without a real project carries
+// (011, "Bedeutung ... intern ist ein Projekt", Wissen #589): normalized away
+// to `undefined` on a *valid* element, so the existing "intern" chip and
+// filters keep working unchanged.
+const INTERNAL_PROJECT = 'intern';
 
 /** Resolves the level list a project's `type` values are checked against (Wissen #536). */
 export type LevelsFor = (project: string) => Level[];
@@ -22,48 +26,28 @@ const defaultLevelsFor: LevelsFor = () => DEFAULT_LEVELS;
 /**
  * Resolves the free link kinds a project's notes are parsed and rendered
  * with (F052): a per-project `ktm_link_kinds` list, or the general one.
- * Without this, a kind set only on one project (e.g. a `protocol` link on
- * Nimbus) would be written but never read back on that project's own cards.
  */
 export type LinkKindsFor = (project: string) => LinkKind[];
 
 const defaultLinkKindsFor: LinkKindsFor = () => resolveLinkKinds();
 
-interface NestedNote {
+// A candidate that passed field validation: the finished element (parents
+// still empty) plus what parent resolution needs and cannot read back from
+// `BoardElement` alone — the *unnormalized* `project` value (levelsFor keys
+// on it, not on the "intern" → undefined display value) and the raw
+// frontmatter, to follow this element's own `parent` field one step further
+// up the chain.
+interface Resolved {
+  element: BoardElement;
   entry: FileEntry;
-  type: ElementType;
-  title: string;
-  short?: string;
-  project: string;
-  /**
-   * The project root's own key, independent of a `project` field override on
-   * this note (008 S30/K2). Folder-based ancestor lookup keys on this, not on
-   * `project`, so an element whose frontmatter overrides `project` still finds
-   * ancestors that don't (#429). `undefined` for an own-folder element (008,
-   * addendum 2026-09-20), which has no root-relative folder hierarchy.
-   */
-  rootKey?: string;
-  folders: string[];
-  logical: string[];
-  ownFolder: boolean;
-  /** Wikilink target of the `parent` field, if the note carries one (008 S29). */
-  parentField?: string;
-}
-
-interface Collected {
-  nested: NestedNote[];
-  atomic: FileEntry[];
-  invalid: FileEntry[];
-  basenameIndex: Map<string, NestedNote>;
-  folderIndex: Map<string, NestedNote>;
+  rawProject: string;
 }
 
 /**
  * Resolves file entries and project roots into the task-level board model.
- * Only `_`-notes below a project root, own-folder `_`-notes elsewhere (008,
- * addendum 2026-09-20) and notes in `_Tasks/Atomic/` are considered; epics
- * and features are indexed for parent resolution but never emitted here.
- * `Archive/` is ignored, `Done/` mirrors the open hierarchy.
+ * An element is any note whose frontmatter carries `ktm_id` (011 S54); name,
+ * folder and project root carry no meaning. `read` narrows {@link
+ * readElements} to the bottom level of each element's own project.
  */
 export function read(
   entries: FileEntry[],
@@ -71,26 +55,20 @@ export function read(
   linkKindsFor: LinkKindsFor = defaultLinkKindsFor,
   levelsFor: LevelsFor = defaultLevelsFor,
 ): BoardElement[] {
-  const { nested, atomic, invalid, basenameIndex, folderIndex } = collect(entries, roots, levelsFor);
-  const result: BoardElement[] = [];
-
-  for (const note of nested) {
-    if (note.type !== 'task') continue;
-    result.push(nestedElement(note, basenameIndex, folderIndex, levelsFor, linkKindsFor(note.project)));
-  }
-  for (const entry of atomic) {
-    result.push(atomicElement(entry, linkKindsFor(text(entry.frontmatter.project)), levelsFor));
-  }
-  for (const entry of invalid) {
-    result.push(invalidElement(entry));
-  }
-
-  return result;
+  return readElements(entries, roots, linkKindsFor, levelsFor).filter((el) => {
+    if (el.invalid) return true;
+    const bottom = bottomLevel(levelsFor(el.project ?? INTERNAL_PROJECT));
+    return bottom?.key === el.type;
+  });
 }
 
 /**
- * Like {@link read}, but emits epics and features as cards too, so the board
- * can show any level. Tasks are identical to {@link read}.
+ * Like {@link read}, but emits every level as a card, so the board can show
+ * any of them. Identity, pflichtfelder and hierarchy all come from the
+ * frontmatter alone (011): `ktm_id` marks an element, `parent` names its
+ * ancestor's `ktm_id`, `project` its project's key or `intern`. A project's
+ * own note (`ktm_project`) is never an element, regardless of its name or
+ * location (Wissen #758).
  */
 export function readElements(
   entries: FileEntry[],
@@ -98,168 +76,167 @@ export function readElements(
   linkKindsFor: LinkKindsFor = defaultLinkKindsFor,
   levelsFor: LevelsFor = defaultLevelsFor,
 ): BoardElement[] {
-  const { nested, atomic, invalid, basenameIndex, folderIndex } = collect(entries, roots, levelsFor);
-  const result: BoardElement[] = [];
+  const projectKeys = new Set(roots.map((r) => r.key));
+  projectKeys.add(INTERNAL_PROJECT);
 
-  for (const note of nested) {
-    result.push(nestedElement(note, basenameIndex, folderIndex, levelsFor, linkKindsFor(note.project)));
-  }
-  for (const entry of atomic) {
-    result.push(atomicElement(entry, linkKindsFor(text(entry.frontmatter.project)), levelsFor));
-  }
-  for (const entry of invalid) {
-    result.push(invalidElement(entry));
+  const { winners, invalid } = splitDuplicates(entries);
+
+  const idIndex = new Map<string, Resolved>();
+  const invalidResults: BoardElement[] = [...invalid];
+  for (const entry of winners) {
+    const outcome = validateFields(entry, projectKeys, roots, levelsFor, linkKindsFor);
+    if (outcome.ok) idIndex.set(outcome.resolved.element.id, outcome.resolved);
+    else invalidResults.push(outcome.element);
   }
 
+  const result: BoardElement[] = [...invalidResults];
+  for (const resolved of idIndex.values()) {
+    const { parents, notice } = resolveParents(resolved, idIndex, levelsFor);
+    resolved.element.parents = parents;
+    if (notice) resolved.element.notice = notice;
+    result.push(resolved.element);
+  }
   return result;
 }
 
-function collect(entries: FileEntry[], roots: ProjectRoot[], levelsFor: LevelsFor): Collected {
-  const normRoots = roots
-    .map((r) => ({ key: r.key, root: stripTrailingSlash(r.root) }))
-    .sort((a, b) => b.root.length - a.root.length);
-
-  const nested: NestedNote[] = [];
-  const atomic: FileEntry[] = [];
-  const invalid: FileEntry[] = [];
-
+/**
+ * Splits every `ktm_id` candidate (any note whose frontmatter carries the
+ * key, project notes excluded, Wissen #758) into the one winner per id — the
+ * oldest by `created`, then `ctime`, then path (011 S59) — and the rest,
+ * already turned into "Kennung doppelt" invalid cards.
+ */
+function splitDuplicates(entries: FileEntry[]): { winners: FileEntry[]; invalid: BoardElement[] } {
+  const groups = new Map<string, FileEntry[]>();
   for (const entry of entries) {
-    if (isAtomic(entry.path)) {
-      atomic.push(entry);
-      continue;
-    }
-    const root = normRoots.find((r) => entry.path.startsWith(r.root + '/'));
-    if (root) {
-      const parts = entry.path.slice(root.root.length + 1).split('/');
-      const fileName = parts[parts.length - 1];
-      if (!fileName.startsWith('_')) continue;
-      if (parts[0] === ARCHIVE_SEGMENT) continue;
-      // The project's own note (F085, 006 addendum 2026-09-24, "Projekt
-      // hinzufügen" places it at `<Root>/_Kanban.md`) is not a task, even
-      // though its name starts with `_`: it lies directly in the root
-      // (`parts.length === 1`) and carries `ktm_project` (K10/K11).
-      if (parts.length === 1 && typeof entry.frontmatter.ktm_project === 'string') continue;
-
-      const type = elementType(entry.frontmatter.type);
-      if (!type || !hasStatus(entry.frontmatter.status)) {
-        invalid.push(entry);
-        continue;
-      }
-      const folders = parts.slice(0, -1);
-      const logical = folders[0] === DONE_SEGMENT ? folders.slice(1) : folders;
-      const project = text(entry.frontmatter.project) || root.key;
-      if (!levelsFor(project).some((l) => l.key === type)) {
-        invalid.push(entry);
-        continue;
-      }
-      nested.push({
-        entry,
-        type,
-        title: titleOf(entry, folders[folders.length - 1] ?? ''),
-        short: text(entry.frontmatter.short) || undefined,
-        project,
-        rootKey: root.key,
-        folders,
-        logical,
-        ownFolder: false,
-        parentField: parentFieldOf(entry.frontmatter.parent),
-      });
-      continue;
-    }
-
-    // No project root covers this note: an own-folder element (008, addendum
-    // 2026-09-20) needs type, status and project all present, outside
-    // `_Tasks/Atomic/` and any `Archive/` segment. Anything less is an
-    // ordinary vault note this plugin doesn't own, left untouched (K4).
-    const parts = entry.path.split('/');
-    const fileName = parts[parts.length - 1];
-    if (!fileName.startsWith('_') || parts.includes(ARCHIVE_SEGMENT)) continue;
-    const type = elementType(entry.frontmatter.type);
-    const project = text(entry.frontmatter.project);
-    if (!type || !hasStatus(entry.frontmatter.status) || !project) continue;
-    if (!levelsFor(project).some((l) => l.key === type)) {
-      invalid.push(entry);
-      continue;
-    }
-    nested.push({
-      entry,
-      type,
-      title: titleOf(entry, fileName),
-      short: text(entry.frontmatter.short) || undefined,
-      project,
-      rootKey: undefined,
-      folders: [],
-      logical: [],
-      ownFolder: true,
-      parentField: parentFieldOf(entry.frontmatter.parent),
-    });
+    const raw = entry.frontmatter.ktm_id;
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    if (typeof entry.frontmatter.ktm_project === 'string') continue;
+    const list = groups.get(raw) ?? [];
+    list.push(entry);
+    groups.set(raw, list);
   }
 
-  const basenameIndex = new Map<string, NestedNote>();
-  const folderIndex = new Map<string, NestedNote>();
-  for (const note of nested) {
-    basenameIndex.set(baseName(note.entry.path), note);
-    if (note.rootKey !== undefined) {
-      folderIndex.set(folderKey(note.rootKey, note.logical), note);
+  const winners: FileEntry[] = [];
+  const invalid: BoardElement[] = [];
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      winners.push(group[0]);
+      continue;
     }
+    const sorted = [...group].sort(compareForDuplicate);
+    winners.push(sorted[0]);
+    for (const loser of sorted.slice(1)) invalid.push(invalidElement(loser, 'Kennung doppelt', true));
   }
-
-  return { nested, atomic, invalid, basenameIndex, folderIndex };
+  return { winners, invalid };
 }
 
-function nestedElement(
-  note: NestedNote,
-  basenameIndex: Map<string, NestedNote>,
-  folderIndex: Map<string, NestedNote>,
+// Oldest wins (011 S59): `created` ascending, a missing one counting as
+// younger than any real date; then file creation time; then path, both
+// ascending, for a fully deterministic order.
+function compareForDuplicate(a: FileEntry, b: FileEntry): number {
+  const ca = text(a.frontmatter.created);
+  const cb = text(b.frontmatter.created);
+  if (ca !== cb) {
+    if (!ca) return 1;
+    if (!cb) return -1;
+    return ca < cb ? -1 : 1;
+  }
+  const ta = a.ctime ?? Number.POSITIVE_INFINITY;
+  const tb = b.ctime ?? Number.POSITIVE_INFINITY;
+  if (ta !== tb) return ta - tb;
+  return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+}
+
+type FieldOutcome = { ok: true; resolved: Resolved } | { ok: false; element: BoardElement };
+
+/**
+ * Checks the pflichtfelder (011): `ktm_id` in the allowed format, `type`,
+ * `title` and `status` non-empty, `project` a known project key or `intern`,
+ * `type` a level of that project. Every miss is named in `invalidReason`
+ * (K10-K13); the title of an invalid card is always the file name, never a
+ * fallback derived from H1, folder or root (011 S15, no longer read at all).
+ */
+function validateFields(
+  entry: FileEntry,
+  projectKeys: Set<string>,
+  roots: ProjectRoot[],
   levelsFor: LevelsFor,
-  linkKinds: LinkKind[],
-): BoardElement {
-  const { parents, notice } = resolveParents(note, basenameIndex, folderIndex, levelsFor);
-  const element: BoardElement = {
-    type: note.type,
-    form: 'nested',
-    ...common(note.entry, note.title, note.project || undefined, linkKinds),
-    parents,
-    paths: { note: note.entry.path, folder: dirOf(note.entry.path) },
-  };
-  if (note.ownFolder) element.ownFolder = true;
-  if (notice) element.notice = notice;
-  return element;
-}
+  linkKindsFor: LinkKindsFor,
+): FieldOutcome {
+  const fm = entry.frontmatter;
+  const id = text(fm.ktm_id);
+  const idPresent = id.trim() !== '';
+  const missing: string[] = [];
+  if (!idPresent) missing.push('ktm_id');
 
-// Valid when its `type` is the bottom level of its project (levelsFor,
-// F072 S22): an atomic note carries that type instead of a fixed `'task'`.
-function atomicElement(entry: FileEntry, linkKinds: LinkKind[], levelsFor: LevelsFor): BoardElement {
-  const project = text(entry.frontmatter.project);
-  const bottom = bottomLevel(levelsFor(project));
-  if (!bottom || elementType(entry.frontmatter.type) !== bottom.key || !hasStatus(entry.frontmatter.status)) {
-    return invalidElement(entry);
+  const title = text(fm.title);
+  if (!title.trim()) missing.push('title');
+
+  const status = text(fm.status);
+  if (!status.trim()) missing.push('status');
+
+  const rawProject = text(fm.project);
+  const projectKnown = rawProject.trim() !== '' && projectKeys.has(rawProject);
+  if (!projectKnown) missing.push('project');
+
+  const typeRaw = elementType(fm.type);
+  const typeKnown = typeRaw !== undefined && projectKnown && levelsFor(rawProject).some((l) => l.key === typeRaw);
+  if (typeRaw === undefined || (projectKnown && !typeKnown)) missing.push('type');
+
+  // A *present* but syntactically malformed ktm_id (011, Ergänzung
+  // 2026-09-25, "Kennungsregeln") gets its own reason instead of joining the
+  // generic Pflichtfeld list under the field name "ktm_id"; a missing ktm_id
+  // (idPresent false, already in `missing` above) keeps the old wording.
+  if (idPresent && !isValidId(id)) {
+    const reason =
+      missing.length > 0
+        ? `Kennung ungültig; Pflichtfeld fehlt oder ungültig: ${missing.join(', ')}`
+        : 'Kennung ungültig';
+    return { ok: false, element: invalidElement(entry, reason) };
   }
-  return {
-    type: bottom.key,
-    form: 'atomic',
-    ...common(entry, titleOf(entry, baseName(entry.path)), project || undefined, linkKinds),
+
+  if (missing.length > 0) {
+    return { ok: false, element: invalidElement(entry, `Pflichtfeld fehlt oder ungültig: ${missing.join(', ')}`) };
+  }
+
+  const form = isAtomic(entry.path) ? 'atomic' : 'nested';
+  const project = rawProject === INTERNAL_PROJECT ? undefined : rawProject;
+  const element: BoardElement = {
+    id,
+    type: typeRaw!,
+    form,
+    ...common(entry, title, project, linkKindsFor(rawProject)),
     parents: [],
-    paths: { note: entry.path },
+    paths: form === 'atomic' ? { note: entry.path } : { note: entry.path, folder: dirOf(entry.path) },
   };
+  if (computeOwnFolder(entry.path, form, rawProject, roots)) element.ownFolder = true;
+  if (text(fm.ktm_placement) === 'manual') element.placement = 'manual';
+  return { ok: true, resolved: { element, entry, rawProject } };
 }
 
-// A `_`-note or atomic note without a valid `type` or without a `status` is
-// surfaced rather than dropped: the board shows it as an invalid card whose
-// title is the file name so the problem is visible instead of silently missing.
-function invalidElement(entry: FileEntry): BoardElement {
-  const nested = !isAtomic(entry.path);
+// A `_`-note or atomic note without valid pflichtfelder, or one whose
+// `ktm_id` collides with an older file, is surfaced rather than dropped: the
+// board shows it as an invalid card whose title is the file name, so the
+// problem is visible instead of silently missing.
+function invalidElement(entry: FileEntry, reason: string, duplicate = false): BoardElement {
+  const form = isAtomic(entry.path) ? 'atomic' : 'nested';
   return {
+    id: text(entry.frontmatter.ktm_id),
+    // Fixed to the bottom level's usual key so an invalid card keeps showing
+    // in the default (bottom-level) view regardless of its own `type` field,
+    // matching the pre-011 behavior invalid cards always relied on.
     type: 'task',
-    form: nested ? 'nested' : 'atomic',
+    form,
     title: baseName(entry.path),
     status: '',
     priority: DEFAULT_PRIORITY,
     tags: [],
     parents: [],
     links: [],
-    paths: nested ? { note: entry.path, folder: dirOf(entry.path) } : { note: entry.path },
+    paths: form === 'atomic' ? { note: entry.path } : { note: entry.path, folder: dirOf(entry.path) },
     invalid: true,
+    invalidReason: reason,
+    ...(duplicate ? { duplicate: true } : {}),
   };
 }
 
@@ -305,7 +282,7 @@ function common(
 }
 
 // Free links per configured kind, in the kinds' order, and within a kind in the
-// order of that field's list (K1). Targets are the wikilink names Obsidian
+// order of that field's list. Targets are the wikilink names Obsidian
 // stores, stripped of an alias or heading suffix. Exported so the board can
 // rederive a single open note's links from a fresh metadataCache frontmatter
 // (F036), without a second parser.
@@ -332,11 +309,6 @@ function wikilinkTarget(raw: string): string | undefined {
   return inner.split(/[|#]/)[0].trim() || undefined;
 }
 
-function parentFieldOf(value: unknown): string | undefined {
-  if (typeof value !== 'string' || !value.trim()) return undefined;
-  return wikilinkTarget(value);
-}
-
 function checklistOf(body: string): Checklist | undefined {
   let done = 0;
   let total = 0;
@@ -350,77 +322,77 @@ function checklistOf(body: string): Checklist | undefined {
 }
 
 /**
- * The element's parent chain, nearest first. The `parent` field wins over the
- * folder (008 S30/K2); without a field, the folder decides as before (K3).
- * Climbing continues from whichever ancestor was found, each step applying
- * the same rule, so a task's `parent` on a feature still reaches the epic
- * above it through the feature's own folder (K1).
+ * The element's parent chain, nearest first, resolved purely by `ktm_id`
+ * (011 S57): `parent` names an ancestor's id; a dangling id, or one that
+ * resolves to a same-or-lower level, yields no parent and a notice naming
+ * the element's path and the offending value (K19). Climbing continues from
+ * whichever ancestor was found, so a task's `parent` on a feature still
+ * reaches the epic above it through the feature's own `parent` (K16).
  */
 function resolveParents(
-  note: NestedNote,
-  basenameIndex: Map<string, NestedNote>,
-  folderIndex: Map<string, NestedNote>,
+  resolved: Resolved,
+  idIndex: Map<string, Resolved>,
   levelsFor: LevelsFor,
 ): { parents: ParentRef[]; notice?: string } {
-  const { ancestor, notice } = immediateAncestor(note, basenameIndex, folderIndex, levelsFor);
   const parents: ParentRef[] = [];
-  const seen = new Set<string>([note.entry.path]);
-  let current = ancestor;
-  while (current && !seen.has(current.entry.path)) {
-    seen.add(current.entry.path);
-    parents.push({ type: current.type, title: current.title, note: current.entry.path, short: current.short });
-    current = immediateAncestor(current, basenameIndex, folderIndex, levelsFor).ancestor;
+  const seen = new Set<string>([resolved.element.id]);
+  let current = resolved;
+  let notice: string | undefined;
+  let first = true;
+  while (true) {
+    const parentValue = text(current.entry.frontmatter.parent);
+    if (!parentValue.trim()) break;
+    const target = idIndex.get(parentValue);
+    if (!target) {
+      if (first) notice = `Unbekannter Parent „${parentValue}“: ${resolved.element.paths.note}`;
+      break;
+    }
+    if (seen.has(target.element.id) || !isHigherLevel(target, current, levelsFor)) {
+      // A known id, but on the same or a lower level, or closing a cycle
+      // (011 K20): distinct from a dangling id, and naming the level so the
+      // notice explains *why* the parent was rejected.
+      if (first) {
+        notice = `Parent „${parentValue}“ liegt nicht auf einer höheren Ebene: ${resolved.element.paths.note}`;
+      }
+      break;
+    }
+    seen.add(target.element.id);
+    parents.push({
+      id: target.element.id,
+      type: target.element.type,
+      title: target.element.title,
+      note: target.element.paths.note,
+      short: target.element.short,
+    });
+    current = target;
+    first = false;
   }
   return { parents, notice };
 }
 
-// One step of parent resolution. A `parent` field that resolves to a known
-// note of a strictly higher level wins; a field that is dangling or points at
-// a same-or-lower level is rejected outright, with no fallback to the folder
-// (K6): the field is an explicit statement of intent, wrong is not "ignore
-// it". Without a field, the nearest ancestor `_`-note by folder decides (K3).
-function immediateAncestor(
-  note: NestedNote,
-  basenameIndex: Map<string, NestedNote>,
-  folderIndex: Map<string, NestedNote>,
-  levelsFor: LevelsFor,
-): { ancestor?: NestedNote; notice?: string } {
-  const folderAncestor = nearestFolderAncestor(note, folderIndex);
-  if (note.parentField === undefined) {
-    return { ancestor: folderAncestor };
-  }
-  const fieldAncestor = basenameIndex.get(note.parentField);
-  if (!fieldAncestor || !isHigherLevel(fieldAncestor, note, levelsFor)) {
-    return {};
-  }
-  const notice =
-    folderAncestor && folderAncestor.entry.path !== fieldAncestor.entry.path
-      ? `Ordner passt nicht zum Parent: ${note.entry.path}`
-      : undefined;
-  return { ancestor: fieldAncestor, notice };
-}
-
-// Walks shorter folder prefixes until one names an indexed note (mirrors the
-// pre-F049 loop over the whole chain, #368, #492); a gap where an
-// intermediate folder carries no note of its own is skipped. Own-folder notes
-// have no root-relative folder, so they never resolve an ancestor this way.
-function nearestFolderAncestor(
-  note: NestedNote,
-  folderIndex: Map<string, NestedNote>,
-): NestedNote | undefined {
-  if (note.rootKey === undefined) return undefined;
-  for (let i = note.logical.length - 1; i >= 1; i--) {
-    const found = folderIndex.get(folderKey(note.rootKey, note.logical.slice(0, i)));
-    if (found) return found;
-  }
-  return undefined;
-}
-
-function isHigherLevel(candidate: NestedNote, child: NestedNote, levelsFor: LevelsFor): boolean {
-  const levels = levelsFor(child.project);
-  const candidateRank = levels.findIndex((l) => l.key === candidate.type);
-  const childRank = levels.findIndex((l) => l.key === child.type);
+function isHigherLevel(candidate: Resolved, child: Resolved, levelsFor: LevelsFor): boolean {
+  const levels = levelsFor(child.rawProject);
+  const candidateRank = levels.findIndex((l) => l.key === candidate.element.type);
+  const childRank = levels.findIndex((l) => l.key === child.element.type);
   return candidateRank !== -1 && childRank !== -1 && candidateRank < childRank;
+}
+
+// Whether the note's folder lies outside its project's configured root (008,
+// addendum 2026-09-20): purely for display (Ordner-Feld's "eigener Ordner"
+// marker), never for identity or parent resolution.
+function computeOwnFolder(
+  entryPath: string,
+  form: 'nested' | 'atomic',
+  rawProject: string,
+  roots: ProjectRoot[],
+): boolean {
+  if (form !== 'nested') return false;
+  const root = roots.find((r) => r.key === rawProject)?.root;
+  if (!root) return false;
+  const normRoot = stripTrailingSlash(root);
+  if (!normRoot) return false;
+  const folder = dirOf(entryPath);
+  return !(folder === normRoot || folder.startsWith(normRoot + '/'));
 }
 
 function isAtomic(path: string): boolean {
@@ -429,23 +401,6 @@ function isAtomic(path: string): boolean {
 
 function elementType(value: unknown): ElementType | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value : undefined;
-}
-
-function hasStatus(value: unknown): boolean {
-  return text(value).trim() !== '';
-}
-
-function titleOf(entry: FileEntry, fallbackName: string): string {
-  const title = entry.frontmatter.title;
-  if (typeof title === 'string' && title.trim()) return title;
-  const h1 = firstHeading(entry.body);
-  if (h1) return h1;
-  return stripDatePrefix(stripLeadingUnderscore(baseName(fallbackName)));
-}
-
-function firstHeading(body: string): string | undefined {
-  const match = /^#\s+(.+?)\s*$/m.exec(body);
-  return match ? match[1] : undefined;
 }
 
 function dateField(value: unknown): string | undefined {
@@ -462,10 +417,6 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function folderKey(rootKey: string, logical: string[]): string {
-  return rootKey + ' ' + logical.join('/');
-}
-
 function dirOf(path: string): string {
   const cut = path.lastIndexOf('/');
   return cut === -1 ? '' : path.slice(0, cut);
@@ -475,14 +426,6 @@ function baseName(path: string): string {
   const cut = path.lastIndexOf('/');
   const name = cut === -1 ? path : path.slice(cut + 1);
   return name.endsWith('.md') ? name.slice(0, -3) : name;
-}
-
-function stripLeadingUnderscore(name: string): string {
-  return name.startsWith('_') ? name.slice(1) : name;
-}
-
-function stripDatePrefix(name: string): string {
-  return name.replace(/^\d{4}-\d{2}-\d{2}_/, '');
 }
 
 function stripTrailingSlash(path: string): string {
