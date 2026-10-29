@@ -1,4 +1,5 @@
-import type { BoardElement, Checklist, ElementType } from './model';
+import { isVisibleUnderSelection, type FilterSelection } from './filter';
+import type { BoardElement, Checklist, ElementType, ParentRef } from './model';
 import { doneStatuses, type Column, type Level } from './settings';
 
 export type BoardView =
@@ -24,6 +25,10 @@ export interface BoardOptions {
   epic?: string;
   levelContext?: LevelContext;
   doneLimit?: number;
+  /** Filterfeld-Auswahl (001, Ergänzung 2026-10-18, Wissen #371): ein weiterer sequentieller Filter, angewandt vor childProgress. */
+  filterSelection?: ReadonlySet<string>;
+  /** Tag-Auswahl der Sektion Tags (001, Ergänzung 2026-10-25): wirkt wie filterSelection, die Status-Sektion nie (S51 "Status auf dem Board"). */
+  filterTags?: ReadonlySet<string>;
 }
 
 /**
@@ -53,16 +58,20 @@ export function offerableLevels(levels: Level[], childTypes: ElementType[]): Lev
 }
 
 // Rank from the bottom of `list` (bottom = 0), or undefined if `key` is not
-// in the list at all.
-function rankOf(list: Level[], key: string): number | undefined {
+// in the list at all. Exported for core/tree.ts (012 "Baum"): the depth
+// cutoff of the level switcher and the "höhere Ebene vor niedrigerer"
+// default order need the same rank, for a level key rather than an element.
+export function rankOf(list: Level[], key: string): number | undefined {
   const idx = list.findIndex((l) => l.key === key);
   return idx === -1 ? undefined : list.length - 1 - idx;
 }
 
 // An element's rank from the bottom of its own project's level list, or the
 // general list for an element without a project or one missing from the
-// context.
-function ownRank(el: BoardElement, ctx: LevelContext): number | undefined {
+// context. Exported for core/tree.ts (012 "Baum"): buildTree determines its
+// depth cutoff by the same rule as buildBoard's `all` level mapping, instead
+// of rebuilding it (Leiter Stufe 2, Wissen #371).
+export function ownRank(el: BoardElement, ctx: LevelContext): number | undefined {
   const list = (el.project ? ctx.projectLevels[el.project] : undefined) ?? ctx.generalLevels;
   return rankOf(list, el.type);
 }
@@ -140,6 +149,18 @@ export function buildBoard(
     );
   }
 
+  if (options.filterSelection || options.filterTags) {
+    // Status wirkt auf dem Board nie (001, Ergänzung 2026-10-25, S51): die
+    // Status-Sektion geht hier immer leer ein, unabhängig davon, was im
+    // Filterfeld gewählt ist.
+    const selection: FilterSelection = {
+      ids: options.filterSelection ?? new Set(),
+      statuses: new Set(),
+      tags: options.filterTags ?? new Set(),
+    };
+    visible = visible.filter((c) => isVisibleUnderSelection(c, selection, bottomLevel));
+  }
+
   if (level !== bottomLevel) {
     const doneSet = doneStatuses(columns);
     visible = visible.map((card) => ({
@@ -188,8 +209,15 @@ export function buildBoard(
   for (const col of result) col.cards.sort(compareCards);
 
   if (invalidCards.length > 0 && result.length > 0) {
+    // Into the column its own (raw) status names, last within it; an empty
+    // or unknown status falls back to the first column (011 S98-S100, F123).
+    // Appended after the sort above, so a valid column's own cards stay
+    // sorted and every invalid card lands strictly after them.
     invalidCards.sort((a, b) => a.title.localeCompare(b.title));
-    result[0].cards.push(...invalidCards);
+    for (const card of invalidCards) {
+      const col = byStatus.get(card.status) ?? result[0];
+      col.cards.push(card);
+    }
   }
 
   for (const [status, list] of [...unknownCards.entries()].sort(([a], [b]) => a.localeCompare(b))) {
@@ -268,6 +296,110 @@ function closedWithoutColumnNotice(count: number): string {
   return `${count} ${noun} ohne Spalte`;
 }
 
+export interface LinkCandidate {
+  element: BoardElement;
+  /** Index of the visual group this candidate belongs to; the caller draws a separator between two different values (002, Ergänzung 2026-10-18). */
+  group: number;
+  closed: boolean;
+}
+
+/**
+ * Builds the link-menu's Ebenen search list (002, Ergänzung 2026-10-18,
+ * S53-S58): `elements` are already narrowed to the searched level and
+ * exclude the card's own note. Only an actual project view keeps just that
+ * project (S53); `internal` narrows which *cards* the board shows, not
+ * which ancestors are searchable, so it groups across every project like
+ * `all` does — confirmed by draft-project.mjs K8, which still has to find a
+ * Nimbus feature as a parent for a draft opened from the internal view. The
+ * card's own project (if it has one) comes first, then `projectOrder`, any
+ * project missing from both last. Within every such group, elements
+ * descending from `parentIds` (a set of already-set higher parents) form
+ * their own sub-group ahead of the rest (S57). Within every (sub-)group,
+ * open elements sort before closed ones, both alphabetically
+ * (`localeCompare` 'de', S54). `group` numbers these (sub-)groups in the
+ * order they were emitted; the caller draws a separator wherever it changes
+ * between two consecutive candidates.
+ *
+ * `preferredProjects` (002 S56, "Interner Entwurf in einer gespeicherten
+ * Ansicht"): outside a project view, these projects' groups come right after
+ * the source's own (usually empty for a projectless draft), ahead of
+ * `projectOrder` — the projects a saved view's filter touches, so its own
+ * selection surfaces first. Ignored in a project view, which already groups
+ * by that single project alone.
+ */
+export function linkCandidates(
+  elements: BoardElement[],
+  query: string,
+  parentIds: string[],
+  sourceProject: string | undefined,
+  view: BoardView,
+  projectOrder: string[],
+  isClosed: (element: BoardElement) => boolean,
+  preferredProjects: string[] = [],
+): LinkCandidate[] {
+  const needle = query.trim().toLowerCase();
+  let matches = elements.filter((el) => !needle || el.title.toLowerCase().includes(needle));
+  if (view.kind === 'project') matches = matches.filter((el) => el.project === view.project);
+
+  const groupKeys: (string | undefined)[] =
+    view.kind === 'project'
+      ? [view.project]
+      : [...new Set([sourceProject, ...preferredProjects, ...projectOrder, undefined])];
+
+  const parentSet = new Set(parentIds);
+  const isDescendant = (el: BoardElement): boolean => el.parents.some((p) => parentSet.has(p.id));
+  const byTitle = (a: BoardElement, b: BoardElement): number => a.title.localeCompare(b.title, 'de');
+  const sortGroup = (list: BoardElement[]): BoardElement[] => {
+    const open = list.filter((el) => !isClosed(el)).sort(byTitle);
+    const closed = list.filter((el) => isClosed(el)).sort(byTitle);
+    return [...open, ...closed];
+  };
+
+  const result: LinkCandidate[] = [];
+  let group = -1;
+  const pushGroup = (list: BoardElement[]): void => {
+    if (list.length === 0) return;
+    group++;
+    for (const el of sortGroup(list)) result.push({ element: el, group, closed: isClosed(el) });
+  };
+  const pushProjectGroup = (list: BoardElement[]): void => {
+    if (parentSet.size === 0) {
+      pushGroup(list);
+      return;
+    }
+    pushGroup(list.filter(isDescendant));
+    pushGroup(list.filter((el) => !isDescendant(el)));
+  };
+
+  const remaining = new Set(matches);
+  for (const key of groupKeys) {
+    const list = matches.filter((el) => el.project === key && remaining.has(el));
+    for (const el of list) remaining.delete(el);
+    pushProjectGroup(list);
+  }
+  pushProjectGroup([...remaining]);
+
+  return result;
+}
+
+/**
+ * The chain a chosen parent brings along, top to bottom (008, Ergänzung
+ * 2026-10-06: "Verknüpfungen zeigen den Parent mit seiner Kette"): the
+ * element's own resolved `parents` (nearest first) reversed, then the
+ * element itself as a `ParentRef`.
+ */
+export function parentChain(element: BoardElement): ParentRef[] {
+  return [...element.parents].reverse().concat([
+    {
+      id: element.id,
+      type: element.type,
+      title: element.title,
+      note: element.paths.note,
+      short: element.short,
+    },
+  ]);
+}
+
 /**
  * Sorts an element's children for the enlarged card's link list: by
  * column order, done columns last (DESIGN.md data shape "children"),
@@ -292,7 +424,12 @@ export function orderChildren(children: BoardElement[], columns: Column[]): Boar
 // order; the rest follow the default rule of priority, then due date, then
 // title (DESIGN.md, data shape "order within column").
 function compareCards(a: BoardElement, b: BoardElement): number {
-  if (a.order !== undefined && b.order !== undefined) return a.order - b.order;
+  if (a.order !== undefined && b.order !== undefined) {
+    // On a tie, by path (F127 U5): otherwise the sequence after a reload
+    // depended on the MetadataCache's own iteration order instead of a fixed
+    // rule (K4).
+    return a.order - b.order || a.paths.note.localeCompare(b.paths.note);
+  }
   if (a.order !== undefined) return -1;
   if (b.order !== undefined) return 1;
   if (a.priority !== b.priority) return a.priority - b.priority;

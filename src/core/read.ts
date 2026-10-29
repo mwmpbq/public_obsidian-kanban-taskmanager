@@ -1,3 +1,4 @@
+import type { LinkResolver } from './check';
 import { isValidId } from './ids';
 import type {
   BoardElement,
@@ -8,7 +9,9 @@ import type {
   ParentRef,
   ProjectRoot,
 } from './model';
-import { bottomLevel, DEFAULT_LEVELS, type Level, type LinkKind, resolveLinkKinds } from './settings';
+import { bottomLevel, DEFAULT_LEVELS, type Level, type LinkKind, resolveLinkKinds, RESULT_LINK_KIND } from './settings';
+
+const RESULT_KEY = RESULT_LINK_KIND.key;
 
 const ATOMIC_PREFIX = '_Tasks/Atomic/';
 const DEFAULT_PRIORITY = 3;
@@ -79,7 +82,7 @@ export function readElements(
   const projectKeys = new Set(roots.map((r) => r.key));
   projectKeys.add(INTERNAL_PROJECT);
 
-  const { winners, invalid } = splitDuplicates(entries);
+  const { winners, invalid } = splitDuplicates(entries, projectKeys);
 
   const idIndex = new Map<string, Resolved>();
   const invalidResults: BoardElement[] = [...invalid];
@@ -105,7 +108,10 @@ export function readElements(
  * oldest by `created`, then `ctime`, then path (011 S59) — and the rest,
  * already turned into "Kennung doppelt" invalid cards.
  */
-function splitDuplicates(entries: FileEntry[]): { winners: FileEntry[]; invalid: BoardElement[] } {
+function splitDuplicates(
+  entries: FileEntry[],
+  projectKeys: Set<string>,
+): { winners: FileEntry[]; invalid: BoardElement[] } {
   const groups = new Map<string, FileEntry[]>();
   for (const entry of entries) {
     const raw = entry.frontmatter.ktm_id;
@@ -125,7 +131,9 @@ function splitDuplicates(entries: FileEntry[]): { winners: FileEntry[]; invalid:
     }
     const sorted = [...group].sort(compareForDuplicate);
     winners.push(sorted[0]);
-    for (const loser of sorted.slice(1)) invalid.push(invalidElement(loser, 'Kennung doppelt', true));
+    for (const loser of sorted.slice(1)) {
+      invalid.push(invalidElement(loser, 'Kennung doppelt', projectKeys, true));
+    }
   }
   return { winners, invalid };
 }
@@ -192,11 +200,14 @@ function validateFields(
       missing.length > 0
         ? `Kennung ungültig; Pflichtfeld fehlt oder ungültig: ${missing.join(', ')}`
         : 'Kennung ungültig';
-    return { ok: false, element: invalidElement(entry, reason) };
+    return { ok: false, element: invalidElement(entry, reason, projectKeys) };
   }
 
   if (missing.length > 0) {
-    return { ok: false, element: invalidElement(entry, `Pflichtfeld fehlt oder ungültig: ${missing.join(', ')}`) };
+    return {
+      ok: false,
+      element: invalidElement(entry, `Pflichtfeld fehlt oder ungültig: ${missing.join(', ')}`, projectKeys),
+    };
   }
 
   const form = isAtomic(entry.path) ? 'atomic' : 'nested';
@@ -210,16 +221,34 @@ function validateFields(
     paths: form === 'atomic' ? { note: entry.path } : { note: entry.path, folder: dirOf(entry.path) },
   };
   if (computeOwnFolder(entry.path, form, rawProject, roots)) element.ownFolder = true;
-  if (text(fm.ktm_placement) === 'manual') element.placement = 'manual';
+  // 011, Ergänzung 2026-10-19 "ktm_placement": any value but the literal
+  // string `auto` reads as `manual`, including `true`, `null` (an empty
+  // value) or an unrecognized word — only a missing key stays `auto`. The
+  // plugin never rewrites the value itself (ktm:check reports it instead).
+  if (Object.hasOwn(fm, 'ktm_placement') && text(fm.ktm_placement) !== 'auto') element.placement = 'manual';
   return { ok: true, resolved: { element, entry, rawProject } };
 }
 
 // A `_`-note or atomic note without valid pflichtfelder, or one whose
 // `ktm_id` collides with an older file, is surfaced rather than dropped: the
 // board shows it as an invalid card whose title is the file name, so the
-// problem is visible instead of silently missing.
-function invalidElement(entry: FileEntry, reason: string, duplicate = false): BoardElement {
+// problem is visible instead of silently missing. Carries `project` (011 S98,
+// F123) when the frontmatter names a known, non-`intern` project, so the card
+// sorts into that project's view and the "all" view's project chip — `intern`,
+// an unknown project, or none at all leave it project-less, same as a valid
+// element without one (011 S99). `status` keeps its raw, trimmed value (011
+// S100) instead of always reading empty, so board.ts can place the card in
+// the column its status actually names.
+function invalidElement(
+  entry: FileEntry,
+  reason: string,
+  projectKeys: Set<string>,
+  duplicate = false,
+): BoardElement {
   const form = isAtomic(entry.path) ? 'atomic' : 'nested';
+  const rawProject = text(entry.frontmatter.project).trim();
+  const project =
+    rawProject && rawProject !== INTERNAL_PROJECT && projectKeys.has(rawProject) ? rawProject : undefined;
   return {
     id: text(entry.frontmatter.ktm_id),
     // Fixed to the bottom level's usual key so an invalid card keeps showing
@@ -228,7 +257,8 @@ function invalidElement(entry: FileEntry, reason: string, duplicate = false): Bo
     type: 'task',
     form,
     title: baseName(entry.path),
-    status: '',
+    status: text(entry.frontmatter.status).trim(),
+    project,
     priority: DEFAULT_PRIORITY,
     tags: [],
     parents: [],
@@ -253,6 +283,7 @@ function common(
   | 'priority'
   | 'planned'
   | 'due'
+  | 'started'
   | 'completed'
   | 'ticket'
   | 'summary'
@@ -270,6 +301,7 @@ function common(
     priority: typeof fm.priority === 'number' ? fm.priority : DEFAULT_PRIORITY,
     planned: dateField(fm.planned),
     due: dateField(fm.due),
+    started: dateField(fm.started),
     completed: dateField(fm.completed),
     ticket: typeof fm.ticket === 'number' ? fm.ticket : undefined,
     summary: text(fm.summary) || undefined,
@@ -286,12 +318,20 @@ function common(
 // stores, stripped of an alias or heading suffix. Exported so the board can
 // rederive a single open note's links from a fresh metadataCache frontmatter
 // (F036), without a second parser.
+//
+// `results` is always read as a free link, whether or not it is among the
+// configured `linkKinds` (002, Ergänzung 2026-10-19 "Result"): it is a fixed
+// kind outside `linkKinds` (settings.ts#RESULT_LINK_KIND/withResultKind), so
+// changes() and rebase() treat it like any other kind without a special case.
 export function linksOf(fm: Record<string, unknown>, linkKinds: LinkKind[]): FreeLink[] {
+  const kinds = linkKinds.some((k) => k.key === RESULT_KEY) ? linkKinds : [...linkKinds, RESULT_LINK_KIND];
   const links: FreeLink[] = [];
-  for (const kind of linkKinds) {
+  for (const kind of kinds) {
     for (const raw of asList(fm[kind.key])) {
       const target = wikilinkTarget(raw);
-      if (target) links.push({ kind: kind.key, target });
+      if (!target) continue;
+      const alias = wikilinkAlias(raw);
+      links.push(alias ? { kind: kind.key, target, alias } : { kind: kind.key, target });
     }
   }
   return links;
@@ -303,10 +343,33 @@ function asList(value: unknown): string[] {
   return [];
 }
 
+/**
+ * The name a free link's row shows (002, Ergänzung 2026-10-06, "Notizname";
+ * F107 K1; 002 Ergänzung 2026-10-19, F138 K1): with an alias (`[[target|alias]]`,
+ * bracketed or not) the alias itself, unconditionally; otherwise the resolved
+ * target file's own name without `.md`, or, unresolved, the link text's last
+ * path segment without `.md` — never the raw linktext with its path.
+ */
+export function linkDisplayName(linktext: string, sourcePath: string, resolve: LinkResolver): string {
+  const alias = wikilinkAlias(linktext);
+  if (alias) return alias;
+  const target = wikilinkTarget(linktext) ?? linktext;
+  const resolved = resolve(target, sourcePath);
+  return baseName(resolved ?? target);
+}
+
 function wikilinkTarget(raw: string): string | undefined {
   const match = /^\s*\[\[([^\]]+)\]\]\s*$/.exec(raw);
   const inner = match ? match[1] : raw;
   return inner.split(/[|#]/)[0].trim() || undefined;
+}
+
+/** The alias half of a `[[target|alias]]` wikilink (002 S77), bracketed or not. */
+function wikilinkAlias(raw: string): string | undefined {
+  const match = /^\s*\[\[([^\]]+)\]\]\s*$/.exec(raw);
+  const inner = match ? match[1] : raw;
+  const pipe = inner.indexOf('|');
+  return pipe === -1 ? undefined : inner.slice(pipe + 1).trim() || undefined;
 }
 
 function checklistOf(body: string): Checklist | undefined {
@@ -323,9 +386,10 @@ function checklistOf(body: string): Checklist | undefined {
 
 /**
  * The element's parent chain, nearest first, resolved purely by `ktm_id`
- * (011 S57): `parent` names an ancestor's id; a dangling id, or one that
- * resolves to a same-or-lower level, yields no parent and a notice naming
- * the element's path and the offending value (K19). Climbing continues from
+ * (011 S57): `parent` names an ancestor's id; a dangling id, one that
+ * resolves to a same-or-lower level, or one belonging to a different project
+ * (011, Ergänzung 2026-10-19), yields no parent and a notice naming the
+ * element's path and the offending value (K19). Climbing continues from
  * whichever ancestor was found, so a task's `parent` on a feature still
  * reaches the epic above it through the feature's own `parent` (K16).
  */
@@ -345,6 +409,14 @@ function resolveParents(
     const target = idIndex.get(parentValue);
     if (!target) {
       if (first) notice = `Unbekannter Parent „${parentValue}“: ${resolved.element.paths.note}`;
+      break;
+    }
+    // A parent belonging to another project (011, Ergänzung 2026-10-19,
+    // "Projektwechsel nimmt den Parent"): only checked against the element's
+    // own project, so only the first step rejects it — an already-accepted
+    // ancestor further up is never revisited here.
+    if (first && target.rawProject !== resolved.rawProject) {
+      notice = `Parent „${parentValue}“ gehört zu einem anderen Projekt: ${resolved.element.paths.note}`;
       break;
     }
     if (seen.has(target.element.id) || !isHigherLevel(target, current, levelsFor)) {

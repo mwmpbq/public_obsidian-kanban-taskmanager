@@ -429,7 +429,15 @@ export function planFiling(element: BoardElement, refile: FilingRequest, env: Re
   }
 
   const owns = element.form !== 'atomic' && ownsFolder(element, env.elements, env.projects);
-  const taken = target.parentFolder ? env.siblings(target.parentFolder) : [];
+  // A pure title change (Ablageregel 3) never sets `target.parentFolder` — it
+  // renames in place — so without this, `taken` stayed empty and a title
+  // colliding with a sibling's name never got the `-2` suffix that a draft or
+  // a folder move already get (008 "Titel und Name", S28; K9).
+  let taken: Iterable<string> = target.parentFolder ? env.siblings(target.parentFolder) : [];
+  if (target.title && target.parentFolder === undefined && element.form !== 'atomic') {
+    const currentFolder = element.paths.folder ?? dirOf(element.paths.note);
+    taken = env.siblings(dirOf(currentFolder));
+  }
   const plan = planRefile(
     {
       form: element.form,

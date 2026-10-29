@@ -1,7 +1,8 @@
 import { setIcon } from 'obsidian';
 import { dueState, priorityIcon, relativeDate, visibleTags } from '../core/dates';
 import type { BoardElement } from '../core/model';
-import type { CardField } from '../core/settings';
+import type { CardField, TagEntry } from '../core/settings';
+import { splitTagChips } from '../core/tags';
 
 const ICON_PLANNED = 'calendar';
 const ICON_DUE = 'flag';
@@ -12,6 +13,8 @@ export interface AncestorChip {
   title: string;
   levelName: string;
   fullTitle: string;
+  /** Element-ID des Vorfahren, für den Hervorhebungs-/Filter-Klick (001, Ergänzung 2026-10-18); fehlt in der Einstellungen-Vorschau, die ohne Klick-Handler bleibt. */
+  id?: string;
 }
 
 /**
@@ -34,6 +37,7 @@ export function renderCardFace(
   done: boolean,
   showProject: boolean,
   ancestors: AncestorChip[],
+  tagList: TagEntry[],
 ): void {
   const titleRow = cardEl.createDiv({ cls: 'ktm-card-titlerow', attr: { title: card.title } });
   if (card.ticket !== undefined && fields.includes('ticket')) {
@@ -42,7 +46,7 @@ export function renderCardFace(
   titleRow.createSpan({ cls: 'ktm-card-title', text: card.title });
 
   renderMeta(cardEl, card, fields, today, done);
-  renderChips(cardEl, card, fields, showProject, ancestors);
+  renderChips(cardEl, card, fields, showProject, ancestors, tagList);
 }
 
 function renderMeta(
@@ -92,7 +96,8 @@ function renderMeta(
   }
 }
 
-function metaItem(
+/** Geplant-/Fällig-Feld mit Icon, Label und Signalzustand (012 "Agenda" ruft es direkt für seine Spalten auf). */
+export function metaItem(
   parent: HTMLElement,
   cls: string,
   icon: string,
@@ -116,25 +121,46 @@ function renderChips(
   fields: CardField[],
   showProject: boolean,
   ancestors: AncestorChip[],
+  tagList: TagEntry[],
 ): void {
   const showParents = fields.includes('parents') && ancestors.length > 0;
   const showTags = fields.includes('tags');
-  const tags = showTags ? visibleTags(card.tags) : { shown: [], rest: 0 };
-  if (!showProject && !showParents && tags.shown.length === 0) return;
+  // Icon-Chips (002, Ergänzung 2026-10-25) don't count toward "höchstens drei,
+  // dann +n" (F006 K8): only the text part goes through visibleTags.
+  const split = showTags ? splitTagChips(card.tags, tagList) : { icons: [], text: [] };
+  const tags = visibleTags(split.text);
+  if (!showProject && !showParents && split.icons.length === 0 && tags.shown.length === 0) return;
 
   const chips = parent.createDiv({ cls: 'ktm-card-chips' });
   for (const field of fields) {
     if (field === 'project' && showProject) {
-      chips.createSpan({ cls: 'ktm-card-chip ktm-card-project', text: card.project || 'intern' });
+      // data-project (001, Ergänzung 2026-10-25): leer für intern, der
+      // intern-Chip bleibt reine Anzeige (Wissen #390).
+      chips.createSpan({
+        cls: 'ktm-card-chip ktm-card-project',
+        text: card.project || 'intern',
+        attr: { 'data-project': card.project ?? '' },
+      });
     }
     if (field === 'parents' && showParents) {
       for (const ancestor of ancestors) {
-        renderParentChip(chips, ancestor.icon, ancestor.title, ancestor.levelName, ancestor.fullTitle);
+        renderParentChip(chips, ancestor.icon, ancestor.title, ancestor.levelName, ancestor.fullTitle, ancestor.id);
       }
     }
     if (field === 'tags' && showTags) {
+      for (const chip of split.icons) {
+        const iconChip = chips.createSpan({
+          cls: 'ktm-card-chip ktm-chip is-icon',
+          attr: { 'aria-label': chip.tag, 'data-tag': stripHash(chip.tag) },
+        });
+        setIcon(iconChip, chip.icon);
+      }
       for (const tag of tags.shown) {
-        chips.createSpan({ cls: 'ktm-card-chip ktm-card-tag', text: stripHash(tag) });
+        chips.createSpan({
+          cls: 'ktm-card-chip ktm-card-tag',
+          text: stripHash(tag),
+          attr: { 'data-tag': stripHash(tag) },
+        });
       }
       if (tags.rest > 0) {
         chips.createSpan({ cls: 'ktm-card-chip ktm-card-tagmore', text: `+${tags.rest}` });
@@ -143,10 +169,21 @@ function renderChips(
   }
 }
 
-function renderParentChip(parent: HTMLElement, icon: string, title: string, levelName: string, fullTitle: string): void {
+/** Ebenen-Chip (Epic, Feature, …) wie auf der Karte; die Agenda ruft ihn für ihre Spalte "Epic › Feature" direkt auf. */
+export function renderParentChip(
+  parent: HTMLElement,
+  icon: string,
+  title: string,
+  levelName: string,
+  fullTitle: string,
+  id?: string,
+): void {
   const chip = parent.createSpan({
     cls: 'ktm-card-chip ktm-card-parent',
-    attr: { 'aria-label': `${levelName}: ${fullTitle}` },
+    attr: {
+      'aria-label': `${levelName}: ${fullTitle}`,
+      ...(id ? { 'data-ancestor-id': id } : {}),
+    },
   });
   setIcon(chip, icon);
   chip.createSpan({ text: title });
@@ -154,4 +191,16 @@ function renderParentChip(parent: HTMLElement, icon: string, title: string, leve
 
 function stripHash(tag: string): string {
   return tag.startsWith('#') ? tag.slice(1) : tag;
+}
+
+/**
+ * Statusmarke (012 "Statusmarke"): Punkt plus Spaltenname, angehängt an die
+ * Karte in Woche, Agenda und Matrix. Trägt nur `data-status`, keinen
+ * Klick-Handler — der hängt BoardView an (installAncestorChipHandlers), wie
+ * bei den übrigen Chips.
+ */
+export function renderStatusMark(cardEl: HTMLElement, status: string, columnName: string, tone: string): void {
+  const mark = cardEl.createDiv({ cls: 'ktm-status', attr: { 'data-tone': tone, 'data-status': status } });
+  mark.createSpan({ cls: 'ktm-status-dot' });
+  mark.createSpan({ cls: 'ktm-status-name', text: columnName });
 }

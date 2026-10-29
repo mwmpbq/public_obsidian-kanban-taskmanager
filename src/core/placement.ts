@@ -216,6 +216,38 @@ export function currentLocation(element: BoardElement, elements: BoardElement[],
   return ownUnit(element, elements, projects);
 }
 
+/**
+ * Whether `path` lies under the `Done/` mirror of its own base (a project
+ * root or the atomic base, via {@link baseFor}) — the permission to merge
+ * into an occupied target (008, Ergänzung 2026-10-19 "Der berechnete Ort ist
+ * schon belegt"): merging is only ever allowed into a `Done/` mirror, never
+ * into an ordinary folder outside it (008, "ausserhalb").
+ */
+export function isInDoneMirror(path: string, projects: PlacementProject[]): boolean {
+  const base = baseFor(path, projects);
+  if (!base || path === base) return false;
+  const rel = path.slice(base.length + 1);
+  return rel === DONE_SEGMENT || rel.startsWith(`${DONE_SEGMENT}/`);
+}
+
+/**
+ * Whether `element` currently sits inside a `Done/` mirror of its own base
+ * (its project root or the atomic base), independent of its `status` (006,
+ * Ergänzung 2026-10-18 "Sperre für Done-Umzüge"): used in place of the
+ * status-based {@link IsDone} while the general settings are unreadable, so
+ * `computedLocation`'s own `withDoneMirror` neither moves an element into
+ * `Done/` nor pulls it back out — `done` passed in already matches the
+ * mirrored state of the element's current path, so the target stays the
+ * current path either way.
+ */
+export function isCurrentlyDone(
+  element: BoardElement,
+  elements: BoardElement[],
+  projects: PlacementProject[],
+): boolean {
+  return isInDoneMirror(currentLocation(element, elements, projects), projects);
+}
+
 export interface HandMoveCandidate {
   id: string;
   oldPath: string;
@@ -233,7 +265,10 @@ export interface OwnMove {
  * covered by one of the plugin's own recent moves ({@link OwnMove}, tracked
  * by adapters/obsidian.ts#moveElement), and that is not itself nested inside
  * another candidate's old directory — a child swept along inside its
- * parent's folder is not "moved by hand" on its own account.
+ * parent's folder is not "moved by hand" on its own account. Several
+ * candidates for the same `id` (a file renamed more than once within one
+ * batch) are folded into one first — its first `oldPath`, its last
+ * `newPath` — before any of this is judged (011, Ergänzung 2026-10-24).
  */
 export function handMoved(candidates: HandMoveCandidate[], ownMoves: OwnMove[]): string[] {
   const isOwnMove = (oldPath: string, newPath: string): boolean =>
@@ -243,7 +278,14 @@ export function handMoved(candidates: HandMoveCandidate[], ownMoves: OwnMove[]):
         (newPath === m.to || newPath.startsWith(`${m.to}/`)),
     );
 
-  const moved = candidates.filter((c) => {
+  const byId = new Map<string, HandMoveCandidate>();
+  for (const c of candidates) {
+    const prior = byId.get(c.id);
+    byId.set(c.id, prior ? { id: c.id, oldPath: prior.oldPath, newPath: c.newPath } : c);
+  }
+  const consolidated = [...byId.values()];
+
+  const moved = consolidated.filter((c) => {
     const oldDir = dirOf(c.oldPath);
     const newDir = dirOf(c.newPath);
     return oldDir !== newDir && !isOwnMove(c.oldPath, c.newPath);

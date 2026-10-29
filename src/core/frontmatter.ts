@@ -96,18 +96,18 @@ function editInner(inner: string, sets: Map<string, string>, clears: Set<string>
       if (isContinuation(line)) continue;
       skipContinuation = false;
     }
-    const key = topLevelKey(line);
-    if (key === undefined) {
+    const parsed = parseKeyLine(line, nl);
+    if (!parsed) {
       out.push(line);
       continue;
     }
-    if (clears.has(key)) {
+    if (clears.has(parsed.key)) {
       skipContinuation = true;
       continue;
     }
-    if (sets.has(key)) {
-      out.push(`${key}: ${sets.get(key) as string}${terminator(line, nl)}`);
-      applied.add(key);
+    if (sets.has(parsed.key)) {
+      out.push(`${parsed.prefix}${sets.get(parsed.key) as string}${parsed.comment}${parsed.term}`);
+      applied.add(parsed.key);
       skipContinuation = true;
       continue;
     }
@@ -122,9 +122,72 @@ function editInner(inner: string, sets: Map<string, string>, clears: Set<string>
   return out.join('');
 }
 
-function topLevelKey(line: string): string | undefined {
-  const match = /^([A-Za-z0-9_][\w-]*)\s*:/.exec(line);
-  return match ? match[1] : undefined;
+interface KeyLine {
+  key: string;
+  prefix: string;
+  comment: string;
+  term: string;
+}
+
+const KEY_LINE = /^("[^"]*"|'(?:[^']|'')*'|[A-Za-z0-9_][\w-]*)\s*:[ \t]*([\s\S]*)$/;
+
+/**
+ * Parses a frontmatter line into the key it sets (quotes stripped so
+ * `"status":` and `status:` are the same key), the key's original spelling
+ * with a normalized `: ` after it (so a set keeps the key's own quoting
+ * without inheriting one line's unrelated colon spacing, e.g. a block-list
+ * key with no same-line value), and a trailing inline comment (whitespace
+ * plus `#…`) found outside the value when that value is quoted.
+ */
+function parseKeyLine(line: string, nlFallback: string): KeyLine | undefined {
+  const term = terminator(line, nlFallback);
+  const body = term ? line.slice(0, line.length - term.length) : line;
+  const match = KEY_LINE.exec(body);
+  if (!match) return undefined;
+  const raw = match[1];
+  const key = raw.startsWith('"')
+    ? raw.slice(1, -1)
+    : raw.startsWith("'")
+      ? raw.slice(1, -1).replace(/''/g, "'")
+      : raw;
+  return { key, prefix: `${raw}: `, comment: trailingComment(match[2]), term };
+}
+
+/**
+ * Finds a trailing inline comment (whitespace plus `#…`) in a raw value, so a
+ * set can keep it while only rewriting the value. A `#` inside a quoted value
+ * is not a comment (`title: "A # B"`); outside one, YAML only treats `#` as a
+ * comment when it follows whitespace.
+ */
+function trailingComment(rest: string): string {
+  const quoteEnd = quotedValueEnd(rest);
+  if (quoteEnd !== undefined) {
+    const after = rest.slice(quoteEnd);
+    return /^\s*(#.*)?$/.test(after) ? after : '';
+  }
+  const match = /^(?:.*?)(\s+#.*)?$/.exec(rest) as RegExpExecArray;
+  return match[1] ?? '';
+}
+
+function quotedValueEnd(s: string): number | undefined {
+  const quote = s[0];
+  if (quote !== '"' && quote !== "'") return undefined;
+  for (let i = 1; i < s.length; i++) {
+    if (quote === '"') {
+      if (s[i] === '\\') {
+        i++;
+        continue;
+      }
+      if (s[i] === '"') return i + 1;
+    } else if (s[i] === "'") {
+      if (s[i + 1] === "'") {
+        i++;
+        continue;
+      }
+      return i + 1;
+    }
+  }
+  return undefined;
 }
 
 function isContinuation(line: string): boolean {

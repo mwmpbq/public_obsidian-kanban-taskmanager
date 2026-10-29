@@ -13,6 +13,8 @@ import { flowList, yamlScalar } from '../core/frontmatter';
 import type { BoardElement, FileEntry, ProjectRoot } from '../core/model';
 import { readElements } from '../core/read';
 import {
+  type ButtonStyle,
+  buttonStyleOf,
   CARD_FIELDS,
   type CardField,
   chipLevelLabel,
@@ -21,22 +23,31 @@ import {
   columnMembers,
   type ColumnRole,
   DEFAULT_LEVELS,
+  effectiveTags,
   isValidColumnKey,
+  isValidTag,
   type Level,
   type LinkKind,
+  orderProjects,
   parseColumns,
   parseLevelList,
   parseLinkKindList,
+  parseTagList,
   type ProjectSettings,
   resolveCardFields,
   resolveLevels,
   resolveLinkKinds,
   resolveProjectSettings,
+  resolveTagList,
+  RESULT_LINK_KIND,
   type ResolvedSettings,
   settingsFor,
+  type TagEntry,
+  withResultKind,
 } from '../core/settings';
 import type KanbanTaskManagerPlugin from '../main';
 import { type AncestorChip, renderCardFace } from './cardFace';
+import { levelPlural } from './BoardView';
 import { ColumnDialog } from './ColumnDialog';
 import { ProjectDialog } from './ProjectDialog';
 
@@ -72,13 +83,32 @@ const CARD_FIELD_ICONS: Record<CardField, string> = {
 
 const NEW_LINK_KIND: LinkKind = { key: '', label: '', icon: 'file-text' };
 
-// The Rolle dropdown of a column row (006 addendum 2026-09-22, DESIGN.md
-// §Spalten-Zeile): a role's label, in the order the select offers them.
+// The Rolle dropdown of a column row (006 addendum 2026-09-22, Ergänzung
+// 2026-10-25 "Spaltenrolle aktiv", DESIGN.md §Spalten-Zeile): a role's label,
+// in the order the select offers them.
 const COLUMN_ROLE_LABELS: Array<[ColumnRole, string]> = [
   ['open', 'offen'],
+  ['active', 'aktiv'],
   ['done', 'erledigt'],
   ['wont-do', 'verworfen'],
 ];
+
+// The key's own default role (006, Ergänzung 2026-10-25): "doing" is active,
+// every other open key is open. persistColumns and commitColumnName use this
+// to decide whether a role needs writing out at all.
+function defaultIsActive(key: string): boolean {
+  return key === 'doing';
+}
+
+// `undefined` when the column's role matches its key's default (006,
+// Ergänzung 2026-10-25 "nur bei Abweichung"); an end role never needs one,
+// its role already follows the key itself.
+function roleOverride(column: Column): 'aktiv' | 'offen' | undefined {
+  if (column.role === 'done' || column.role === 'wont-do') return undefined;
+  const isActive = column.role === 'active';
+  if (isActive === defaultIsActive(column.status)) return undefined;
+  return isActive ? 'aktiv' : 'offen';
+}
 
 // Internal is synthetic: there is neither a card.project nor a project note
 // for that (wissen 390, 555). Root and note path are convention, modeled on
@@ -127,6 +157,8 @@ export class KtmSettingTab extends PluginSettingTab {
   private scope: string = SCOPE_GENERAL;
   private linkKinds: LinkKind[] = [];
   private levels: Level[] = [];
+  private tags: TagEntry[] = [];
+  private tagSectionEl?: HTMLElement;
   private cardFieldOrder: CardField[] = [];
   private cardFieldEnabled: Set<CardField> = new Set();
   private columns: Column[] = [];
@@ -158,18 +190,19 @@ export class KtmSettingTab extends PluginSettingTab {
   // Fire-and-forget (wissen: MarkdownRenderer-Musters): the vault read (project
   // list and "Gilt für" options) happens first, so the scope dropdown and every
   // section below it are drawn from the same project list in one pass (F058:
-  // "renderPage liest die Projekte vor renderScope").
+  // "renderPage liest die Projekte vor renderScope"). The await stays before
+  // containerEl.empty(): once empty() and the rebuild run, nothing yields the
+  // event loop between them, so the browser never gets a chance to notice the
+  // scroller is briefly content-less and reset its scrollTop (F110, #700).
   private async renderPage(): Promise<void> {
     const { containerEl } = this;
-    containerEl.empty();
-    const root = containerEl.createDiv({ cls: 'ktm-settings' });
 
     await this.plugin.indexReady;
     const entries = this.plugin.index.entries();
     const roots = this.plugin.index.roots();
     this.roots = roots;
     this.levelEntries = entries;
-    this.projects = resolveProjectSettings(entries).projects;
+    this.projects = orderProjects(resolveProjectSettings(entries).projects, this.plugin.settings.projectOrder);
     if (this.scope !== SCOPE_GENERAL && !this.projects.some((p) => p.key === this.scope)) {
       this.scope = SCOPE_GENERAL;
     }
@@ -177,7 +210,14 @@ export class KtmSettingTab extends PluginSettingTab {
     const linkKindsFor = (project: string) => this.settingsForProject(project).linkKinds;
     this.elements = readElements(entries, roots, linkKindsFor, levelsFor);
 
+    const scroller = (containerEl.closest('.vertical-tab-content') as HTMLElement | null) ?? containerEl;
+    const scrollTop = scroller.scrollTop;
+
+    containerEl.empty();
+    const root = containerEl.createDiv({ cls: 'ktm-settings' });
+
     this.renderScope(root);
+    if (this.plugin.settingsUnreadableSinceLoad) this.renderAdoptDefaultsRow(root);
 
     const headingByJump = new Map<string, HTMLElement>();
     this.renderJumpBar(root, headingByJump);
@@ -189,6 +229,7 @@ export class KtmSettingTab extends PluginSettingTab {
     this.renderBoardSection(root);
 
     headingByJump.set(SECTIONS[2].jump, this.renderSectionHeading(root, SECTIONS[2].heading));
+    this.renderTodaySection(root);
 
     headingByJump.set(SECTIONS[3].jump, this.renderSectionHeading(root, SECTIONS[3].heading));
     this.renderCardClosedSection(root);
@@ -200,6 +241,8 @@ export class KtmSettingTab extends PluginSettingTab {
 
     headingByJump.set(SECTIONS[6].jump, this.renderSectionHeading(root, SECTIONS[6].heading));
     this.renderLevelsSection(root);
+
+    scroller.scrollTop = scrollTop;
   }
 
   // S44/K1/K2: a Setting row with the heading role, not a raw h2/h3 — Obsidian
@@ -232,6 +275,24 @@ export class KtmSettingTab extends PluginSettingTab {
           ? 'Schreibt data.json. Projekte erben, was sie nicht selbst setzen.'
           : 'Schreibt die Projektnotiz. Nicht gesetzte Zeilen erben vom Allgemeinen.',
     });
+  }
+
+  // 006, Ergänzung 2026-10-19 "Eine unlesbare Einstellungsdatei wird nie
+  // überschrieben" (S45, S64/S65): erscheint nur, solange data.json seit dem
+  // Laden kein einziges Mal lesbar war; der Klick ist die ausdrückliche
+  // Bestätigung, deshalb hier kein automatischer Versuch.
+  private renderAdoptDefaultsRow(container: HTMLElement): void {
+    new Setting(container)
+      .setName('Voreinstellungen übernehmen')
+      .setDesc(
+        'data.json ist seit dem Start nicht lesbar. Eine Kopie landet in data.json.bak, danach gelten die Voreinstellungen.',
+      )
+      .addButton((button) =>
+        button.setButtonText('Voreinstellungen übernehmen').onClick(async () => {
+          await this.plugin.adoptDefaults();
+          void this.renderPage();
+        }),
+      );
   }
 
   private renderJumpBar(container: HTMLElement, headingByJump: Map<string, HTMLElement>): void {
@@ -324,23 +385,27 @@ export class KtmSettingTab extends PluginSettingTab {
   // Shared write path of every project-capable row: general writes data.json,
   // a project writes its note. A redraw always follows the first edit that
   // turns a "Standard" row "eigen" (the badge must update); a caller can force
-  // one for other reasons (drag, add, remove, icon change).
+  // one for other reasons (drag, add, remove, icon change). `skipBoardRedraw`
+  // lets a caller leave the board untouched when it already knows this write
+  // cannot change what the board shows (F144 K13); saving and the settings
+  // page's own redraw rules are unaffected.
   private async persistProjectOrGeneral(
     frontmatterKey: string,
     encode: () => string,
     applyGeneral: () => void,
     forceRedraw: boolean,
+    skipBoardRedraw = false,
   ): Promise<void> {
     if (this.scope === SCOPE_GENERAL) {
       applyGeneral();
       await this.plugin.saveData(this.plugin.settings);
-      this.plugin.rerenderBoard();
+      if (!skipBoardRedraw) this.plugin.rerenderBoard();
       if (forceRedraw) this.display();
       return;
     }
     const wasOwn = this.hasOwnKey(frontmatterKey);
     await this.writeProjectKey(frontmatterKey, encode());
-    this.plugin.rerenderBoard();
+    if (!skipBoardRedraw) this.plugin.rerenderBoard();
     if (forceRedraw || !wasOwn) this.display();
   }
 
@@ -379,6 +444,13 @@ export class KtmSettingTab extends PluginSettingTab {
     addRow.createSpan({ text: 'Projekt hinzufügen' });
     addRow.addEventListener('click', () => {
       void this.addProject();
+    });
+
+    const sortRow = container.createSpan({ cls: 'ktm-addrow' });
+    setIcon(sortRow.createSpan(), 'arrow-down-a-z');
+    sortRow.createSpan({ text: 'Alphabetisch sortieren' });
+    sortRow.addEventListener('click', () => {
+      void this.persistProjectOrder(undefined);
     });
 
     this.renderColumnsSection(container);
@@ -435,6 +507,14 @@ export class KtmSettingTab extends PluginSettingTab {
     const row = list.createDiv({ cls: 'ktm-orderrow' });
     row.setAttribute('data-project-key', key);
     if (hidden) row.setAttribute('data-off', 'true');
+
+    // "intern" is fixed first and has no grip (006, Ergänzung 2026-10-19, S70).
+    if (removable) {
+      const grip = row.createSpan({ cls: 'grip' });
+      setIcon(grip, 'grip-vertical');
+      this.registerDragHandle(grip, key, (dropY) => this.reorderProjects(key, dropY));
+    }
+
     setIcon(row.createSpan({ cls: 'ico' }), 'folder');
 
     if (removable) {
@@ -467,7 +547,7 @@ export class KtmSettingTab extends PluginSettingTab {
       .setValue(!hidden)
       .setDisabled(this.scope !== SCOPE_GENERAL)
       .onChange((visible) => {
-        void this.setProjectHidden(notePath, !visible);
+        void this.setProjectHidden(key, notePath, !visible);
       });
 
     const remove = row.createSpan({ cls: 'x' });
@@ -478,18 +558,38 @@ export class KtmSettingTab extends PluginSettingTab {
     });
   }
 
+  // A geleertes Namensfeld entfernt ktm_name (006, Ergänzung 2026-10-19, S76):
+  // the project then shows under its key, like one that never had a name.
+  // Duplicate names across projects are allowed (009 S21), so there is no
+  // uniqueness check here.
   private async commitProjectName(notePath: string, rawValue: string): Promise<void> {
     if (this.scope !== SCOPE_GENERAL) return;
     const value = rawValue.trim();
-    if (!value) return;
-    await writeFrontmatter(this.app, notePath, { ktm_name: yamlScalar(value) });
+    await writeFrontmatter(this.app, notePath, { ktm_name: value ? yamlScalar(value) : null });
     this.plugin.rerenderBoard();
     this.display();
   }
 
-  private async setProjectHidden(notePath: string, hidden: boolean): Promise<void> {
+  // Hiding the project the board currently shows falls back exactly like
+  // removing it (006, Ergänzung 2026-10-19, S75): "Ansicht beim Öffnen" falls
+  // back to "zuletzt benutzt", and the in-memory last-used view is reset to
+  // "all" too, so it is also what gets persisted the next time the board
+  // saves its state — re-showing the project must not bring either back.
+  private async setProjectHidden(key: string, notePath: string, hidden: boolean): Promise<void> {
     if (this.scope !== SCOPE_GENERAL) return;
     await writeFrontmatter(this.app, notePath, { ktm_hidden: hidden ? 'true' : null });
+    if (hidden) {
+      let changed = false;
+      if (this.plugin.settings.openView === key) {
+        this.plugin.settings.openView = 'last';
+        changed = true;
+      }
+      if (this.plugin.settings.lastView === key) {
+        this.plugin.settings.lastView = VIEW_ALL;
+        changed = true;
+      }
+      if (changed) await this.plugin.saveData(this.plugin.settings);
+    }
     this.plugin.rerenderBoard();
     this.display();
   }
@@ -506,7 +606,14 @@ export class KtmSettingTab extends PluginSettingTab {
       if (result !== 'remove') return;
     }
     const file = this.app.vault.getAbstractFileByPath(notePath);
-    if (file) await this.app.fileManager.trashFile(file);
+    if (file) {
+      try {
+        await this.app.fileManager.trashFile(file);
+      } catch (err) {
+        new Notice(`Projekt entfernen fehlgeschlagen: ${notePath} (${errorMessage(err)})`, NOTICE_DURATION);
+        return;
+      }
+    }
     if (this.plugin.settings.openView === key) {
       this.plugin.settings.openView = 'last';
       await this.plugin.saveData(this.plugin.settings);
@@ -521,7 +628,11 @@ export class KtmSettingTab extends PluginSettingTab {
   // overwritten (F085's "existiert schon, wird abgelehnt").
   private async addProject(): Promise<void> {
     if (this.scope !== SCOPE_GENERAL) return;
-    const result = await ProjectDialog.ask(this.app, { kind: 'create', existing: this.projects });
+    const result = await ProjectDialog.ask(this.app, {
+      kind: 'create',
+      existing: this.projects,
+      noteExists: (path) => !!this.app.vault.getAbstractFileByPath(path),
+    });
     if (!result || result === 'remove') return;
     const { name, key, root } = result;
     const notePath = `${root}/_Kanban.md`;
@@ -530,7 +641,32 @@ export class KtmSettingTab extends PluginSettingTab {
       return;
     }
     const content = `---\nktm_project: ${key}\nktm_name: ${yamlScalar(name)}\nktm_root: ${root}\n---\n\n`;
-    await createNote(this.app, notePath, content);
+    try {
+      await createNote(this.app, notePath, content);
+    } catch (err) {
+      new Notice(`Projekt hinzufügen fehlgeschlagen: ${notePath} (${errorMessage(err)})`, NOTICE_DURATION);
+      return;
+    }
+    this.plugin.rerenderBoard();
+    this.display();
+  }
+
+  // Dragged over or above "intern" lands right behind it (006, Ergänzung
+  // 2026-10-19, S70: "intern" itself never moves and has no grip). The full
+  // key list, hidden projects included, becomes the stored order; no project
+  // note is touched by dragging (S69).
+  private reorderProjects(draggedKey: string, dropY: number): void {
+    const targetKey = this.dropTargetKey('data-project-key', draggedKey, dropY);
+    const rest = this.projects.map((p) => p.key).filter((k) => k !== draggedKey);
+    const insertAt = targetKey === 'intern' ? 0 : targetKey === undefined ? -1 : rest.indexOf(targetKey);
+    rest.splice(insertAt === -1 ? rest.length : insertAt, 0, draggedKey);
+    void this.persistProjectOrder(rest);
+  }
+
+  private async persistProjectOrder(order: string[] | undefined): Promise<void> {
+    if (this.scope !== SCOPE_GENERAL) return;
+    this.plugin.settings.projectOrder = order;
+    await this.plugin.saveData(this.plugin.settings);
     this.plugin.rerenderBoard();
     this.display();
   }
@@ -614,7 +750,7 @@ export class KtmSettingTab extends PluginSettingTab {
         .filter((role): role is ColumnRole => role === 'done' || role === 'wont-do'),
     );
     for (const [role, label] of COLUMN_ROLE_LABELS) {
-      if (role !== 'open' && takenRoles.has(role) && column.role !== role) continue;
+      if ((role === 'done' || role === 'wont-do') && takenRoles.has(role) && column.role !== role) continue;
       select.createEl('option', { value: role, text: label });
     }
     select.value = column.role ?? 'open';
@@ -640,7 +776,7 @@ export class KtmSettingTab extends PluginSettingTab {
     if (!column) return;
     const members = columnMembers(this.elements, column, this.scope, this.projects);
 
-    if (column.role !== 'open') {
+    if (column.role === 'done' || column.role === 'wont-do') {
       if (members.length > 0) {
         const confirmed = await ColumnDialog.ask(this.app, members.length, column.name, {
           kind: 'confirm',
@@ -672,29 +808,46 @@ export class KtmSettingTab extends PluginSettingTab {
       // The status write alone is enough now (011, Ergänzung 2026-09-25):
       // main.ts#placeElement reacts to the changed `status` field itself and
       // files a closed member under Done/ without a separate call here.
+      // Diese Bulk-Zuweisung ist Pflege der Spaltenliste, kein Arbeitsbeginn
+      // (F190, Wissen #1231): markSettingsReassignment schützt vor
+      // stampStartedAfterStatusChange.
+      this.plugin.markSettingsReassignment(member.paths.note);
       await writeFrontmatter(this.app, member.paths.note, { status: target });
     }
     await this.persistColumns(this.columns.filter((_, i) => i !== index));
   }
 
-  // S39: an end role (done/wont-do) switching to open needs a key of its own,
-  // since done/wont-do stay reserved for that role (S36). Without members the
-  // key is derived on the spot; with members a ColumnDialog asks for one, then
-  // every member's status is rewritten before the row itself changes key and
-  // role. The other direction (open to an end role) only ever succeeds
-  // without members or without a key yet (K2's freshly added row); with
-  // members it is refused, matching the dropdown that already hides a taken
-  // end role.
+  // S39, erweitert um die Rolle aktiv (006, Ergänzung 2026-10-25): zwischen
+  // offen und aktiv ändert sich nur die Rolle, Schlüssel und Aufgabendateien
+  // bleiben, kein Dialog. Ein Wechsel aus einer Endrolle (done/wont-do)
+  // heraus braucht weiterhin einen eigenen Schlüssel, da done/wont-do dafür
+  // reserviert bleiben (S36): ohne Mitglieder wird er auf der Stelle
+  // abgeleitet, mit Mitgliedern fragt ein ColumnDialog danach, dann wird
+  // jedes Mitglied umgeschrieben, bevor die Zeile selbst Schlüssel und Rolle
+  // wechselt — die Zielrolle (aktiv oder offen) bestimmt dabei nur, welche
+  // der beiden Nicht-End-Rollen die Zeile danach trägt. Die andere Richtung
+  // (offen/aktiv zu einer Endrolle) gelingt weiterhin nur ohne Mitglieder
+  // oder ohne eigenen Schlüssel (K2s frisch angelegte Zeile); mit Mitgliedern
+  // wird sie abgelehnt, wie es das Dropdown mit einer schon vergebenen
+  // Endrolle schon verhindert.
   private async changeColumnRole(index: number, newRole: ColumnRole): Promise<void> {
     const column = this.columns[index];
     if (!column || column.role === newRole) return;
-    const members = columnMembers(this.elements, column, this.scope, this.projects);
+    const wasEndRole = column.role === 'done' || column.role === 'wont-do';
+    const isEndRole = newRole === 'done' || newRole === 'wont-do';
 
-    if (newRole === 'open') {
+    if (!isEndRole) {
+      if (!wasEndRole) {
+        const next = [...this.columns];
+        next[index] = { ...column, done: false, role: newRole };
+        await this.persistColumns(next);
+        return;
+      }
+      const members = columnMembers(this.elements, column, this.scope, this.projects);
       if (members.length === 0) {
         const key = this.freshColumnKey(columnKey(column.name), index);
         const next = [...this.columns];
-        next[index] = { status: key, name: column.name, done: false, role: 'open' };
+        next[index] = { status: key, name: column.name, done: false, role: newRole };
         await this.persistColumns(next);
         return;
       }
@@ -716,11 +869,12 @@ export class KtmSettingTab extends PluginSettingTab {
         await writeFrontmatter(this.app, member.paths.note, { status: newKey });
       }
       const next = [...this.columns];
-      next[index] = { status: newKey, name: column.name, done: false, role: 'open' };
+      next[index] = { status: newKey, name: column.name, done: false, role: newRole };
       await this.persistColumns(next);
       return;
     }
 
+    const members = columnMembers(this.elements, column, this.scope, this.projects);
     if (members.length === 0 || !column.status) {
       const next = [...this.columns];
       next[index] = { status: newRole, name: column.name, done: true, role: newRole };
@@ -759,7 +913,8 @@ export class KtmSettingTab extends PluginSettingTab {
     const next = [...this.columns];
     if (!column.status) {
       const key = this.freshColumnKey(columnKey(value), index);
-      next[index] = { status: key, name: value, done: false, role: 'open' };
+      const role: ColumnRole = defaultIsActive(key) ? 'active' : 'open';
+      next[index] = { status: key, name: value, done: false, role };
     } else {
       next[index] = { ...column, name: value };
     }
@@ -796,7 +951,10 @@ export class KtmSettingTab extends PluginSettingTab {
     const named = columns.filter((c) => c.status && c.name);
 
     if (this.scope === SCOPE_GENERAL) {
-      this.plugin.settings.columns = named.map((c) => ({ key: c.status, name: c.name }));
+      this.plugin.settings.columns = named.map((c) => {
+        const role = roleOverride(c);
+        return role ? { key: c.status, name: c.name, role } : { key: c.status, name: c.name };
+      });
       delete this.plugin.settings.doneColumns;
       await this.plugin.saveData(this.plugin.settings);
       this.plugin.rerenderBoard();
@@ -809,7 +967,10 @@ export class KtmSettingTab extends PluginSettingTab {
     const wasOwn = this.hasOwnKey('ktm_columns');
     await writeFrontmatter(this.app, project.path, {
       ktm_columns: flowList(
-        named.map((c) => `${c.status} | ${c.name}`),
+        named.map((c) => {
+          const role = roleOverride(c);
+          return role ? `${c.status} | ${c.name} | ${role}` : `${c.status} | ${c.name}`;
+        }),
         true,
       ),
       ktm_done_columns: null,
@@ -823,6 +984,28 @@ export class KtmSettingTab extends PluginSettingTab {
   // is general-only (ribbon, openView, openLevel, allLevels, expanded-card
   // width all steer the board shell itself, not a project's content).
   private renderBoardSection(container: HTMLElement): void {
+    const buttonStyleSetting = new Setting(container).setName('Buttonstil');
+    this.markGlobalOnlyRow(buttonStyleSetting, 'buttonStyle');
+    const currentStyle = buttonStyleOf(this.plugin.settings.buttonStyle);
+    const preview = this.renderButtonStylePreview(container, currentStyle);
+    buttonStyleSetting.addDropdown((dropdown) => {
+      dropdown.addOption('basic', 'Basic');
+      dropdown.addOption('ghost', 'Ghost');
+      dropdown.addOption('outline', 'Outline');
+      dropdown.addOption('keycap', 'Keycap');
+      dropdown.setValue(currentStyle);
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.buttonStyle = value;
+        await this.plugin.saveData(this.plugin.settings);
+        this.plugin.rerenderBoard();
+        // Kein display(): die Vorschau zeigt den neuen Stil sofort über ihr
+        // eigenes Attribut, ein voller Reload würde nur die Scrollposition
+        // kosten (006, Ergänzung 2026-10-25 "Buttonstil"; Wissen #654 S54/S55).
+        preview.setAttribute('data-button-style', buttonStyleOf(value));
+      });
+    });
+    this.lockIfGlobalOnly(buttonStyleSetting);
+
     const ribbonSetting = new Setting(container)
       .setName('Symbol in der Seitenleiste')
       .setDesc('Ein Klick öffnet das Board oder holt es nach vorn.');
@@ -914,6 +1097,74 @@ export class KtmSettingTab extends PluginSettingTab {
     this.lockIfGlobalOnly(widthSetting);
   }
 
+  // Vorschau der Zeile "Buttonstil" (006, Ergänzung 2026-10-25; DESIGN.md
+  // §Komponenten "Einstellung „Buttonstil“ mit Vorschau"): dieselben Klassen
+  // wie BoardView#renderToolbar, damit dieselben CSS-Regeln greifen, aber als
+  // eigenständige Kopie ohne Board-Bezug (Wissen #1157): kein `zoom`, keine
+  // Befehle. Einziger Handler ist das Umschalten des aktiven Segments. Gibt
+  // die Wurzel zurück, damit ein Stilwechsel sie ohne display() aktualisiert.
+  private renderButtonStylePreview(container: HTMLElement, style: ButtonStyle): HTMLElement {
+    const wrap = container.createDiv({ cls: 'ktm-buttonstyle-preview', attr: { 'data-button-style': style } });
+    wrap.createSpan({ cls: 'ktm-preview-heading', text: 'VORSCHAU' });
+    const header = wrap.createDiv({ cls: 'ktm-buttonstyle-preview-header' });
+
+    const newTask = header.createSpan({ cls: 'ktm-button ktm-new-task' });
+    setIcon(newTask.createSpan({ cls: 'ktm-button-icon' }), 'plus');
+    newTask.createSpan({ text: 'Neue Aufgabe' });
+
+    const controls = header.createDiv({ cls: 'ktm-buttonstyle-preview-controls' });
+    const levels = resolveLevels(this.plugin.settings);
+    const bottomKey = levels[levels.length - 1]?.key;
+    const segment = controls.createDiv({ cls: 'ktm-level-segment' });
+    for (let i = levels.length - 1; i >= 0; i--) {
+      const level = levels[i];
+      const button = segment.createEl('button', {
+        cls: 'ktm-level-button',
+        text: levelPlural(level.name),
+        attr: { 'data-level': level.key, 'data-active': String(level.key === bottomKey) },
+      });
+      button.addEventListener('click', () => {
+        for (const sibling of Array.from(segment.children)) {
+          sibling.setAttribute('data-active', String(sibling === button));
+        }
+      });
+    }
+    controls.createDiv({ cls: 'ktm-toolbar-sep' });
+
+    const viewWrap = controls.createDiv({ cls: 'ktm-view-wrap' });
+    const view = viewWrap.createDiv({ cls: 'ktm-view-select ktm-buttonstyle-preview-view' });
+    view.createSpan({ text: 'Alle Aufgaben' });
+    setIcon(view.createSpan({ cls: 'ktm-viewmenu-chevron' }), 'chevron-down');
+    controls.createDiv({ cls: 'ktm-toolbar-sep' });
+
+    const scale = controls.createDiv({ cls: 'ktm-scale', attr: { 'data-scale': '100' } });
+    setIcon(scale.createSpan({ cls: 'ktm-scale-down' }), 'minus');
+    scale.createSpan({ cls: 'ktm-scale-value', text: '100 %' });
+    setIcon(scale.createSpan({ cls: 'ktm-scale-up' }), 'plus');
+
+    return wrap;
+  }
+
+  // Section 3 (004 Ergänzung 2026-10-18, S4): general-only like the rest of
+  // §Board, since it steers the board shell's own notification, not a
+  // project's content. onChange writes this.settings via saveData and then
+  // calls rerenderBoard, whose render() reloads settings before it reads
+  // notifyDue again (wissen #969).
+  private renderTodaySection(container: HTMLElement): void {
+    const notifyDueSetting = new Setting(container)
+      .setName('Heute fällig melden')
+      .setDesc('Zeigt heute fällige Aufgaben im Bereich „Heute“ und zählt sie in der Kopfzeile.');
+    this.markGlobalOnlyRow(notifyDueSetting, 'notifyDue');
+    notifyDueSetting.addToggle((toggle) =>
+      toggle.setValue(this.plugin.settings.notifyDue ?? true).onChange(async (value) => {
+        this.plugin.settings.notifyDue = value;
+        await this.plugin.saveData(this.plugin.settings);
+        this.plugin.rerenderBoard();
+      }),
+    );
+    this.lockIfGlobalOnly(notifyDueSetting);
+  }
+
   // S41's pattern for this row: save on blur/Enter, not per keystroke, then
   // let BoardView#expandedWidth pick the new factor up on its next render
   // (K4).
@@ -990,6 +1241,8 @@ export class KtmSettingTab extends PluginSettingTab {
         await this.persistShortInChips(next);
       });
     });
+
+    this.renderTagList(container);
   }
 
   private renderCardFieldRow(list: HTMLElement, index: number): void {
@@ -1065,7 +1318,181 @@ export class KtmSettingTab extends PluginSettingTab {
     const ancestors = fields.includes('parents')
       ? PREVIEW_ANCESTORS.map((a) => (shortInChips ? a : { ...a, title: a.fullTitle }))
       : [];
-    renderCardFace(cardEl, PREVIEW_CARD, fields, PREVIEW_TODAY, false, fields.includes('project'), ancestors);
+    const tagList =
+      this.scope === SCOPE_GENERAL
+        ? resolveTagList(this.plugin.settings)
+        : effectiveTags(this.plugin.settings, { tags: this.ownTags() ?? [] });
+    renderCardFace(cardEl, PREVIEW_CARD, fields, PREVIEW_TODAY, false, fields.includes('project'), ancestors, tagList);
+  }
+
+  // 006, Ergänzung 2026-10-25 "Tags mit Icon": this.tags is read from storage
+  // once per display() here, the same as renderColumnsSection; paintTagSection
+  // then redraws only from this.tags as it stands, so adding an unnamed draft
+  // row (which persistTags deliberately never writes to data.json/ktm_tags)
+  // does not lose it the way a full display() would (wissen #528's pattern,
+  // applied where the redraw must not even touch storage).
+  private renderTagList(container: HTMLElement): void {
+    const own = this.scope !== SCOPE_GENERAL ? this.ownTags() : undefined;
+    const stored = this.scope === SCOPE_GENERAL ? this.plugin.settings.tagList : own;
+    this.tags = stored ? stored.map((t) => ({ ...t })) : [];
+
+    this.tagSectionEl = container.createDiv();
+    this.paintTagSection();
+  }
+
+  private ownTags(): TagEntry[] | undefined {
+    const raw = this.currentProjectEntry()?.frontmatter.ktm_tags;
+    if (raw === undefined) return undefined;
+    return parseTagList(raw) ?? undefined;
+  }
+
+  // The heading itself carries no Standard/eigen badge (the project list
+  // ergänzt, not ersetzt, so markProjectRow does not apply here). In project
+  // scope the resolved general tags are drawn first as locked rows
+  // (data-tag-scope general), then the project's own this.tags.
+  private paintTagSection(): void {
+    const section = this.tagSectionEl;
+    if (!section) return;
+    section.empty();
+
+    const heading = new Setting(section)
+      .setName('Tags')
+      .setDesc(
+        'Hinterlegte Tags stehen zuerst in den Vorschlägen. Ein Icon ersetzt auf der geschlossenen Karte den Namen.',
+      );
+    heading.settingEl.setAttribute('data-setting', 'tagList');
+
+    const list = section.createDiv({ cls: 'ktm-orderlist' });
+    if (this.scope !== SCOPE_GENERAL) {
+      for (const tag of resolveTagList(this.plugin.settings)) {
+        this.renderTagRow(list, tag, undefined);
+      }
+    }
+    for (let index = 0; index < this.tags.length; index += 1) {
+      this.renderTagRow(list, this.tags[index], index);
+    }
+
+    const addRow = section.createSpan({ cls: 'ktm-addrow' });
+    setIcon(addRow.createSpan(), 'plus');
+    addRow.createSpan({ text: 'Tag hinzufügen' });
+    addRow.addEventListener('click', () => {
+      this.tags = [...this.tags, { tag: '' }];
+      this.paintTagSection();
+    });
+  }
+
+  // `index` undefined marks a locked general row in project scope (K6): grip
+  // and icon button render without a handler, the field is disabled, and the
+  // cross is a "Standard" badge instead — dragging or clicking such a row
+  // changes neither the project note nor data.json.
+  private renderTagRow(list: HTMLElement, tag: TagEntry, index: number | undefined): void {
+    const locked = index === undefined;
+    const row = list.createDiv({ cls: 'ktm-orderrow' });
+    if (locked) row.setAttribute('data-tag-scope', 'general');
+    else row.setAttribute('data-tag-index', String(index));
+
+    const grip = row.createSpan({ cls: 'grip' });
+    setIcon(grip, 'grip-vertical');
+    if (!locked) {
+      this.registerDragHandle(grip, tag.tag, (dropY) => this.reorderTags(index, dropY));
+    }
+
+    const iconButton = row.createSpan({ cls: 'ico is-btn' });
+    if (tag.icon) {
+      setIcon(iconButton, tag.icon);
+    } else {
+      iconButton.addClass('is-empty');
+      setIcon(iconButton, 'plus');
+    }
+    if (!locked) {
+      iconButton.addEventListener('click', () => {
+        this.openIconCatalog(iconButton, tag.icon, (icon) => {
+          const next = this.tags.map((t, i) => (i === index ? { ...t, icon } : t));
+          void this.persistTags(next);
+        });
+      });
+    }
+
+    const tagInput = row.createEl('input', {
+      cls: 'ktm-textinput',
+      attr: { type: 'text', placeholder: 'Tag' },
+    });
+    tagInput.value = tag.tag;
+    if (locked) {
+      tagInput.disabled = true;
+    } else {
+      this.onCommit(tagInput, (value) => this.commitTag(index, value, tagInput));
+    }
+
+    if (locked) {
+      row.createSpan({ cls: 'ktm-badge', text: 'Standard' });
+    } else {
+      const remove = row.createSpan({ cls: 'x' });
+      setIcon(remove, 'x');
+      remove.addEventListener('click', () => {
+        void this.persistTags(this.tags.filter((_, i) => i !== index));
+      });
+    }
+  }
+
+  // A doppelter Tag is checked only within this.tags, the list currently
+  // being edited (general or the project's own) — a project tag repeating a
+  // general one is the intended override (S98/S99), not a duplicate. An
+  // emptied field stays a local draft (no write, Muster addRow), exactly like
+  // a row that was never named at all.
+  private commitTag(index: number, rawValue: string, inputEl: HTMLInputElement): void {
+    const value = rawValue.trim();
+    const current = this.tags[index];
+    if (value === current.tag) return;
+    if (value === '') {
+      this.tags = this.tags.map((t, i) => (i === index ? { ...t, tag: '' } : t));
+      this.paintTagSection();
+      return;
+    }
+    const key = value.toLowerCase();
+    const duplicate = this.tags.some((t, i) => i !== index && t.tag.toLowerCase() === key);
+    if (!isValidTag(value) || duplicate) {
+      new Notice(`„${value}“ ist kein gültiger oder ist ein doppelter Tag.`, NOTICE_DURATION);
+      inputEl.value = current.tag;
+      return;
+    }
+    void this.persistTags(this.tags.map((t, i) => (i === index ? { ...t, tag: value } : t)));
+  }
+
+  private reorderTags(draggedIndex: number, dropY: number): void {
+    const targetKey = this.dropTargetKey('data-tag-index', String(draggedIndex), dropY);
+    const targetIndex = targetKey === undefined ? -1 : Number(targetKey);
+    const dragged = this.tags[draggedIndex];
+    const rest = this.tags.filter((_, i) => i !== draggedIndex);
+    const targetTag = targetIndex === -1 ? undefined : this.tags[targetIndex];
+    const insertAt = targetTag ? rest.indexOf(targetTag) : -1;
+    rest.splice(insertAt === -1 ? rest.length : insertAt, 0, dragged);
+    void this.persistTags(rest);
+  }
+
+  // A row without a tag name (a fresh "Tag hinzufügen" draft) is never
+  // written (persistColumns' pattern), until its name is valid. Repaints only
+  // this section, like paintColumnsSection — nothing else on the page depends
+  // on tagList/ktm_tags (006, Ergänzung 2026-10-25: "ausserhalb ResolvedSettings").
+  private async persistTags(tags: TagEntry[]): Promise<void> {
+    this.tags = tags;
+    const named = tags.filter((t) => t.tag);
+
+    if (this.scope === SCOPE_GENERAL) {
+      this.plugin.settings.tagList = named.map((t) => (t.icon ? { tag: t.tag, icon: t.icon } : { tag: t.tag }));
+      await this.plugin.saveData(this.plugin.settings);
+      this.plugin.rerenderBoard();
+      this.paintTagSection();
+      return;
+    }
+
+    const project = this.selectedProject();
+    if (!project) return;
+    await writeFrontmatter(this.app, project.path, {
+      ktm_tags: flowList(named.map((t) => (t.icon ? `${t.tag} | ${t.icon}` : t.tag)), true),
+    });
+    this.plugin.rerenderBoard();
+    this.paintTagSection();
   }
 
   private renderLinkKindsSection(container: HTMLElement): void {
@@ -1080,8 +1507,17 @@ export class KtmSettingTab extends PluginSettingTab {
 
     const list = container.createDiv({ cls: 'ktm-orderlist-host' });
     this.markProjectRow(heading, 'linkKinds', 'ktm_link_kinds', list);
-    for (let index = 0; index < this.linkKinds.length; index += 1) {
-      this.renderLinkKindRow(list, index);
+    // Result is a fixed kind outside `linkKinds` (002, Ergänzung 2026-10-19
+    // "Result"): interleaved here purely for display/drag, at its stored
+    // `resultPosition` — the same combined order `withResultKind` also hands
+    // the board (CardDetail.availableArts/renderFreeLink).
+    const combined = withResultKind(this.linkKinds, this.plugin.settings.resultPosition);
+    for (const kind of combined) {
+      if (kind.key === RESULT_LINK_KIND.key) {
+        this.renderResultKindRow(list);
+      } else {
+        this.renderLinkKindRow(list, this.linkKinds.findIndex((k) => k.key === kind.key));
+      }
     }
     new Setting(container).addButton((button) =>
       button.setButtonText('Verknüpfungsart hinzufügen').onClick(() => {
@@ -1100,12 +1536,13 @@ export class KtmSettingTab extends PluginSettingTab {
     const kind = this.linkKinds[index];
     const row = new Setting(containerEl);
     row.settingEl.setAttribute('data-link-kind', kind.key);
+    row.settingEl.setAttribute('data-order-key', kind.key);
 
     row.addExtraButton((handle) => {
       handle.setIcon('grip-vertical');
       handle.setTooltip('Ziehen zum Umsortieren');
       this.registerDragHandle(handle.extraSettingsEl, kind.key, (dropY) =>
-        this.reorderLinkKinds(kind.key, dropY),
+        this.reorderLinkSection(kind.key, dropY),
       );
     });
 
@@ -1135,6 +1572,7 @@ export class KtmSettingTab extends PluginSettingTab {
         .setValue(kind.key)
         .onChange((value) => {
           row.settingEl.setAttribute('data-link-kind', value);
+          row.settingEl.setAttribute('data-order-key', value);
           this.updateLinkKind(index, { key: value });
         });
     });
@@ -1160,7 +1598,31 @@ export class KtmSettingTab extends PluginSettingTab {
     });
   }
 
-  // Shared by reorderLevels/reorderLinkKinds/reorderCardFields (three drag
+  // Result (002, Ergänzung 2026-10-19 "Result"): displayed among the
+  // Verknüpfungsarten at its stored position, ziehbar like the others, but
+  // fixed — no name/key/prefix fields, no Entfernen-Kreuz (K19). `data-result-
+  // kind` is deliberately not `data-link-kind`, so scripts that count link-
+  // kind rows by that attribute keep seeing only the configurable ones.
+  private renderResultKindRow(containerEl: HTMLElement): void {
+    const row = new Setting(containerEl);
+    row.settingEl.setAttribute('data-result-kind', 'true');
+    row.settingEl.setAttribute('data-order-key', RESULT_LINK_KIND.key);
+
+    row.addExtraButton((handle) => {
+      handle.setIcon('grip-vertical');
+      handle.setTooltip('Ziehen zum Umsortieren');
+      this.registerDragHandle(handle.extraSettingsEl, RESULT_LINK_KIND.key, (dropY) =>
+        this.reorderLinkSection(RESULT_LINK_KIND.key, dropY),
+      );
+    });
+
+    const icon = row.controlEl.createSpan({ cls: 'ktm-result-icon' });
+    setIcon(icon, RESULT_LINK_KIND.icon);
+    row.controlEl.createSpan({ cls: 'ktm-result-name', text: RESULT_LINK_KIND.label });
+    row.controlEl.createSpan({ cls: 'ktm-result-key', text: RESULT_LINK_KIND.key });
+  }
+
+  // Shared by reorderLevels/reorderLinkSection/reorderCardFields (three drag
   // lists on this page, F058 K4 consolidates the third occurrence): the row
   // whose vertical midpoint the pointer ended above, read fresh from the DOM
   // at drop time rather than from the dragged element's own stale position.
@@ -1200,14 +1662,37 @@ export class KtmSettingTab extends PluginSettingTab {
     handleEl.addEventListener('pointerdown', onPointerDown);
   }
 
-  private reorderLinkKinds(draggedKey: string, dropY: number): void {
-    const targetKey = this.dropTargetKey('data-link-kind', draggedKey, dropY);
-    const dragged = this.linkKinds.find((k) => k.key === draggedKey);
+  // Reorders the combined linkKinds+Result sequence (`data-order-key`, both
+  // row kinds), then splits it back apart: linkKinds through its usual
+  // project-or-general write, `resultPosition` always general (006,
+  // Ergänzung 2026-10-19 Projektliste's pattern does not apply here — the
+  // Result row's position is never per-project, "ausserhalb"). Dragging a
+  // link kind past Result carries `resultPosition` along for free, since
+  // Result just keeps whatever index it already had in the reordered list.
+  private reorderLinkSection(draggedKey: string, dropY: number): void {
+    const before = withResultKind(this.linkKinds, this.plugin.settings.resultPosition);
+    const dragged = before.find((k) => k.key === draggedKey);
     if (!dragged) return;
-    const rest = this.linkKinds.filter((k) => k.key !== draggedKey);
+    const rest = before.filter((k) => k.key !== draggedKey);
+    const targetKey = this.dropTargetKey('data-order-key', draggedKey, dropY);
     const targetIndex = targetKey ? rest.findIndex((k) => k.key === targetKey) : -1;
     rest.splice(targetIndex === -1 ? rest.length : targetIndex, 0, dragged);
-    void this.persistLinkKinds(rest, { redraw: true });
+
+    const nextLinkKinds = rest.filter((k) => k.key !== RESULT_LINK_KIND.key);
+    const nextPosition = rest.findIndex((k) => k.key === RESULT_LINK_KIND.key);
+    void this.persistLinkKinds(nextLinkKinds, { redraw: false });
+    void this.persistResultPosition(nextPosition, { redraw: true });
+  }
+
+  // Two write paths to data.json (wissen #969): saves through `this.settings`
+  // (merged, saveData) like every other general-only field on this page, then
+  // `rerenderBoard()` lets the open board's next render pull it into
+  // `storedSettings` too, so a following board-side writer doesn't drop it.
+  private async persistResultPosition(position: number, options: { redraw: boolean }): Promise<void> {
+    this.plugin.settings.resultPosition = position;
+    await this.plugin.saveData(this.plugin.settings);
+    this.plugin.rerenderBoard();
+    if (options.redraw) this.display();
   }
 
   // Popover on the settings page (DESIGN.md .ktm-iconpicker): search field
@@ -1282,6 +1767,7 @@ export class KtmSettingTab extends PluginSettingTab {
   }
 
   private async persistLinkKinds(kinds: LinkKind[], options: { redraw: boolean }): Promise<void> {
+    const previous = this.linkKinds;
     this.linkKinds = kinds;
     await this.persistProjectOrGeneral(
       'ktm_link_kinds',
@@ -1290,6 +1776,26 @@ export class KtmSettingTab extends PluginSettingTab {
         this.plugin.settings.linkKinds = kinds;
       },
       options.redraw,
+      this.effectiveLinkKindsEqual(previous, kinds),
+    );
+  }
+
+  // F144 K13: adding a not-yet-named link kind (NEW_LINK_KIND, key "") changes
+  // nothing the board can render — resolveLinkKinds/parseLinkKindList drop or
+  // invalidate an entry without a valid key the same way they would once it
+  // is actually read back from data.json or the project note — so this write
+  // leaves the board alone; the settings page itself still redraws by the
+  // existing forceRedraw/!wasOwn rule in persistProjectOrGeneral.
+  private effectiveLinkKindsEqual(before: LinkKind[], after: LinkKind[]): boolean {
+    if (this.scope === SCOPE_GENERAL) {
+      return (
+        JSON.stringify(resolveLinkKinds({ linkKinds: before })) ===
+        JSON.stringify(resolveLinkKinds({ linkKinds: after }))
+      );
+    }
+    return (
+      JSON.stringify(parseLinkKindList(before.map(encodeLinkKind))) ===
+      JSON.stringify(parseLinkKindList(after.map(encodeLinkKind)))
     );
   }
 
@@ -1446,4 +1952,8 @@ function encodeLinkKind(kind: LinkKind): string {
   const parts = [kind.key, kind.label, kind.icon];
   if (kind.prefix) parts.push(kind.prefix);
   return parts.join(' | ');
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

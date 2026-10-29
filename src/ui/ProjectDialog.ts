@@ -5,6 +5,8 @@ export interface ProjectDialogCreateOptions {
   kind: 'create';
   /** Every known project, hidden ones included (validateNewProject's overlap check). */
   existing: ProjectSettings[];
+  /** True when `<root>/_Kanban.md` already exists (006, Ergänzung 2026-10-19, S73): the dialog then rejects with a reason instead of closing. */
+  noteExists?: (path: string) => boolean;
 }
 
 export interface ProjectDialogCreateResult {
@@ -140,7 +142,12 @@ export class ProjectDialog extends Modal {
               errorEl.setText(reason);
               return;
             }
-            this.result = { name: name.trim(), key, root: root.replace(/\/+$/, '') };
+            const cleanRoot = root.replace(/\/+$/, '');
+            if (options.noteExists?.(`${cleanRoot}/_Kanban.md`)) {
+              errorEl.setText(`„${cleanRoot}/_Kanban.md“ existiert schon.`);
+              return;
+            }
+            this.result = { name: name.trim(), key, root: cleanRoot };
             this.close();
           }),
       );

@@ -1,5 +1,5 @@
 ---
-ktm_guide: 0.1.0
+ktm_guide: 0.2.0
 ---
 
 ## 1 Anleitung
@@ -69,6 +69,19 @@ meldet ungültige Karten, doppelte Kennungen, einen `parent` ins Leere, einen ve
 berechneten Ort liegt. Die letzte Zeile ist immer `ktm:check <n> Befunde`; der Befehl
 schreibt nichts.
 
+### Results
+
+Ein Result ist ein Dokument, das zum übergeordneten Ziel gehört, nicht nur zur Arbeit der
+Task — etwa die fertige Präsentation, nicht ihr Entwurf. `results` ist eine Liste von
+Wikilinks auf solche Dokumente im Ordner der Task; das Plugin verschiebt jeden Eintrag zum
+direkten Parent der Task und trägt ihn dort in `notes` ein. Für ein anderes Ziel steht
+`result_target: <ktm_id>` im Frontmatter der Task; das Plugin entfernt den Schlüssel,
+sobald die Zuordnung erledigt ist. Der bevorzugte Weg für ein LLM ist `ktm:result
+id=<ktm_id> file=<Pfad> [target=<ktm_id>]`: ohne `target` gilt der direkte Parent. Bei
+einem ungültigen Wert (unbekannte Kennung, Datei fehlt, kein Ziel, Name am Ziel belegt)
+verschiebt `ktm:result` nichts; die erste Ausgabezeile beginnt dann mit `ktm:error
+<Grund>`.
+
 ### Was nie zu tun ist
 
 - Keine bekannten Felder von Hand aus dem YAML-Block löschen, ohne die Notiz auf einen
@@ -96,7 +109,7 @@ Ordner selbsttätig; bei `manual` nie. Wer aus dem Ordner mit relativen oder abs
 Pfaden nach außen verweist, setzt `ktm_placement: manual`, sonst würde ein Umzug diese
 Pfade brechen.
 
-## 3 Änderungen in 0.1.0
+## 3 Änderungen in 0.2.0
 
 - Nur noch das Frontmatter entscheidet, ob eine Notiz ein Element ist (`ktm_id`); Name
   und Ordner tragen keine Bedeutung mehr und dürfen frei geändert werden.

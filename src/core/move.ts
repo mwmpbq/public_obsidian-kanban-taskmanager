@@ -1,5 +1,5 @@
 import type { FrontmatterChange } from './frontmatter';
-import type { Column } from './settings';
+import type { Column, ColumnRole } from './settings';
 
 export type MoveDirection = 'left' | 'right';
 
@@ -50,4 +50,25 @@ function toMove(target: Column, today: string): Move {
     targetStatus: target.status,
     change: { status: target.status, completed: target.done ? today : null },
   };
+}
+
+/**
+ * The new value of `started` after a status change into a column of
+ * `targetRole` (008, Ergänzung 2026-10-25 "Startdatum started"): an active
+ * column stamps today, a done column falls back to the already-decided
+ * `completed` date (or today, if that is unset too), either one only while
+ * `started` itself is still unset. An open or wont-do target, and a card
+ * that already carries `started`, leave it exactly as it is — it is never
+ * cleared here.
+ */
+export function startedAfterStatusChange(
+  targetRole: ColumnRole,
+  started: string | undefined,
+  completed: string | undefined,
+  today: string,
+): string | undefined {
+  if (started) return started;
+  if (targetRole === 'active') return today;
+  if (targetRole === 'done') return completed ?? today;
+  return started;
 }

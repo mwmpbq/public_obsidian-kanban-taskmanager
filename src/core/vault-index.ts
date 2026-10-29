@@ -34,25 +34,65 @@ export class ElementIndex {
   // the raw, momentarily-doubled snapshot exactly as before.
   private touchByPath = new Map<string, number>();
   private touchSeq = 0;
+  // Stufe 3 (F123, 008 Ergänzung 2026-10-18 "Abgleich während des Starts"):
+  // from construction until `load()`'s scan has landed, a `changed()`
+  // arriving for a path must not be clobbered once `load()` replaces
+  // `byPath` wholesale with its own snapshot. `loading` gates that;
+  // `pendingDuringLoad` remembers each such path together with the
+  // frontmatter the caller already had in hand (the same hint `changed()`
+  // would otherwise act on immediately), so nothing is lost and K30's "no
+  // read without a marker" still holds for the catch-up.
+  private loading = false;
+  private pendingDuringLoad = new Map<string, Record<string, unknown> | undefined>();
 
   constructor(source: FileSource) {
     this.source = source;
+    // Set from construction, not merely from load()'s own start (F123,
+    // Wissen #786): main.ts registers the metadataCache 'changed' listener
+    // in onload(), well before buildIndex() ever calls load() — it waits for
+    // onLayoutReady and reloadSettings first. Without this, a change landing
+    // in that gap would hit applyChange() against the still-empty byPath and
+    // then be silently discarded the instant load() replaces byPath wholesale.
+    this.loading = true;
   }
 
-  /** Reads every listed path once, replacing whatever the index held before. */
-  async load(): Promise<void> {
+  /**
+   * Reads every listed path once, replacing whatever the index held before.
+   * Any `changed()` that arrived before this started, or while it was still
+   * running, is queued, not lost (Stufe 3): the queue is not cleared at the
+   * start, only after the catch-up below has drained it, so a change from
+   * the gap between construction and this call survives. Once the full scan
+   * has landed, every queued path is reread exactly as `changed()` itself
+   * would, and the `ktm_id`s actually touched are returned so the caller
+   * (main.ts) can treat them like a change that happened during normal
+   * operation — placing the element and redrawing the board once, instead of
+   * silently swallowing them as "that's just how the vault looked while
+   * loading".
+   */
+  async load(): Promise<string[]> {
+    this.loading = true;
     const paths = await this.source.list();
     const next = new Map<string, FileEntry>();
     const touch = new Map<string, number>();
     for (const path of paths) {
       const entry = await this.source.read(path);
       if (entry) {
-        next.set(path, entry);
-        touch.set(path, ++this.touchSeq);
+        next.set(entry.path, entry);
+        touch.set(entry.path, ++this.touchSeq);
       }
     }
     this.byPath = next;
     this.touchByPath = touch;
+    this.loading = false;
+
+    const pending = [...this.pendingDuringLoad.entries()];
+    this.pendingDuringLoad.clear();
+    const touchedIds: string[] = [];
+    for (const [path, frontmatter] of pending) {
+      const id = await this.applyChange(path, frontmatter);
+      if (id) touchedIds.push(id);
+    }
+    return touchedIds;
   }
 
   /**
@@ -62,24 +102,51 @@ export class ElementIndex {
    * or `ktm_project`, the entry is dropped without a single call to `read()`
    * (K30's Gegenprobe — a note that never had the marker, or lost it, costs
    * zero reads, and `list()` is not consulted at all). Otherwise exactly one
-   * `read(path)` replaces the held entry. Never touches another path.
+   * `read(path)` replaces the held entry. Never touches another path. While
+   * `load()` is still running, the path is queued instead (Stufe 3) — `load()`
+   * itself catches it up once its own full scan has landed.
    */
   async changed(path: string, frontmatter: Record<string, unknown> | undefined): Promise<void> {
+    if (this.loading) {
+      this.pendingDuringLoad.set(path, frontmatter);
+      return;
+    }
+    await this.applyChange(path, frontmatter);
+  }
+
+  // The read-and-store step `changed()` and `load()`'s catch-up share: stores
+  // the fresh entry under its *own* `entry.path`, not necessarily the
+  // requested `path` (F123, Wissen #782/#829) — a file mid-move can already
+  // report a different `path` by the time the adapter's read actually lands,
+  // and the stale request path is dropped so the same `ktm_id` never briefly
+  // sits under two keys. Returns the touched `ktm_id`, if any, so a caller
+  // catching up several queued paths knows which elements to re-place.
+  private async applyChange(
+    path: string,
+    frontmatter: Record<string, unknown> | undefined,
+  ): Promise<string | undefined> {
     const hasMarker =
       typeof frontmatter?.ktm_id === 'string' || typeof frontmatter?.ktm_project === 'string';
+    const previousId = this.byPath.get(path)?.frontmatter.ktm_id;
     if (!hasMarker) {
       this.byPath.delete(path);
       this.touchByPath.delete(path);
-      return;
+      return typeof previousId === 'string' && previousId.trim() ? previousId : undefined;
     }
     const entry = await this.source.read(path);
-    if (entry) {
-      this.byPath.set(path, entry);
-      this.touchByPath.set(path, ++this.touchSeq);
-    } else {
+    if (!entry) {
+      this.byPath.delete(path);
+      this.touchByPath.delete(path);
+      return typeof previousId === 'string' && previousId.trim() ? previousId : undefined;
+    }
+    if (entry.path !== path) {
       this.byPath.delete(path);
       this.touchByPath.delete(path);
     }
+    this.byPath.set(entry.path, entry);
+    this.touchByPath.set(entry.path, ++this.touchSeq);
+    const id = entry.frontmatter.ktm_id;
+    return typeof id === 'string' && id.trim() ? id : undefined;
   }
 
   /**

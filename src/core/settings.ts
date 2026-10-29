@@ -1,9 +1,12 @@
 import type { BoardElement, ElementType, FileEntry, ProjectRoot } from './model';
+import type { SavedView } from './savedViews';
 import type { TodayKey } from './today';
 
 export interface ColumnConfig {
   key: string;
   name: string;
+  /** Only for open keys; an end key's role always follows from the key itself (006, Ergänzung 2026-10-25). */
+  role?: 'aktiv' | 'offen';
 }
 
 export interface GeneralSettings {
@@ -13,7 +16,16 @@ export interface GeneralSettings {
   lastLevel?: ElementType;
   collapsedColumns?: Record<string, string[]>;
   collapsedToday?: Record<string, boolean>;
+  /** "Heute folgt der Auswahl" je Ansicht (004, Ergänzung 2026-10-24). */
+  todayFollows?: Record<string, boolean>;
+  /** Filterfeld-Auswahl je Ansicht, Liste von `ktm_id` (001, Ergänzung 2026-10-18). */
+  filters?: Record<string, string[]>;
+  /** Hervorhebung je Ansicht, `ktm_id` des markierten Elements (001, Ergänzung 2026-10-18 "Hervorheben"). */
+  spotlights?: Record<string, string>;
+  /** Gespeicherte Ansichten in Anzeigereihenfolge (001, Ergänzung 2026-10-18 "Gespeicherte Ansichten"). */
+  savedViews?: SavedView[];
   notifyPlanned?: boolean;
+  notifyDue?: boolean;
   todaySortOrder?: TodayKey[];
   linkKinds?: LinkKind[];
   cardFields?: CardField[];
@@ -31,6 +43,31 @@ export interface GeneralSettings {
   renameOnTitleChange?: boolean;
   /** The exact text "LLM-Verweis einrichten" last appended to CLAUDE.md, so "LLM-Verweis entfernen" can cut precisely that back off (011, Ergänzung 2026-09-25). */
   llmLink?: { appended: string; created: boolean };
+  /** Reihenfolge der Projekte (Kürzel, `intern` ausgenommen, ausgeblendete eingeschlossen); fehlt sie, gilt alphabetisch nach Anzeigename (006, Ergänzung 2026-10-19). */
+  projectOrder?: string[];
+  /** Größe der Board-Ansicht in Prozent, 50-200 in 10er-Schritten, Standard 100 (001, Ergänzung 2026-10-24 "Eigene Größe des Boards"). */
+  boardScale?: number;
+  /** Position der festen Result-Art unter den Verknüpfungsarten (002, Ergänzung 2026-10-19 "Result"); fehlt sie, steht Result am Ende. */
+  resultPosition?: number;
+  /** Form der Bedienelemente, nur allgemein; ein fehlender oder unbekannter Wert gilt als Ghost (006, Ergänzung 2026-10-25 "Buttonstil"). */
+  buttonStyle?: string;
+  /** Hinterlegte Tags mit Icon, allgemein (006, Ergänzung 2026-10-25 "Tags mit Icon"). */
+  tagList?: TagEntry[];
+  /** Reihenfolge der Darstellungs-Icons in der Kopfzeile, nur allgemein (012, Ergänzung 2026-10-25 "Reihenfolge per Ziehen"). */
+  viewOrder?: string[];
+  /** Gemerkte Darstellung je Ansicht ("all", "internal", Projekt-Kürzel), nur allgemein (012, Ergänzung 2026-10-25 "Darstellung für ein Projekt merken"). */
+  viewModes?: Record<string, string>;
+  /** Sortierung des Baums je Ansicht, in Klickreihenfolge, nur allgemein (012, Ergänzung 2026-10-25 "Baum": "Die Sortierung gilt je Ansicht und übersteht Neuladen"). */
+  treeSort?: Record<string, { key: string; dir: 'asc' | 'desc' }[]>;
+  /** Zeitraum und Raster der Roadmap je Ansicht, nur allgemein (012, Ergänzung 2026-10-25 "Roadmap": "Zeitraum und Raster gelten je Ansicht und überstehen Neuladen"); ein unbekannter oder kaputter Eintrag fällt beim Lesen auf den Standard zurück (core/roadmap.ts#parseRoadmapState). */
+  roadmap?: Record<string, { start: string; end: string; grid: string }>;
+}
+
+export type ButtonStyle = 'basic' | 'ghost' | 'outline' | 'keycap';
+
+/** Ordnet den rohen `buttonStyle`-Wert aus `data.json` einem Stil zu; ein fehlender oder unbekannter Wert gilt als Ghost (006, Ergänzung 2026-10-25). */
+export function buttonStyleOf(raw: unknown): ButtonStyle {
+  return raw === 'basic' || raw === 'ghost' || raw === 'outline' || raw === 'keycap' ? raw : 'ghost';
 }
 
 export interface Level {
@@ -131,6 +168,34 @@ export function chipLevelLabel(levels: Level[]): string {
   return `Kurzname in ${[...init, `und ${last}-Chips`].join(', ').replace(', und', ' und')}`;
 }
 
+const BOARD_SCALE_MIN = 50;
+const BOARD_SCALE_MAX = 200;
+const BOARD_SCALE_STEP = 10;
+const BOARD_SCALE_DEFAULT = 100;
+
+/**
+ * Macht aus dem Rohwert von `boardScale` aus data.json eine gültige Größe
+ * (001, Ergänzung 2026-10-24): data.json ist eine Vertrauensgrenze, ein
+ * nicht-endlicher Wert ergibt den Standard, jeder andere wird auf den
+ * nächsten 10er-Schritt gerundet und auf 50-200 begrenzt.
+ */
+export function normalizeBoardScale(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return BOARD_SCALE_DEFAULT;
+  const stepped = Math.round(raw / BOARD_SCALE_STEP) * BOARD_SCALE_STEP;
+  return Math.min(BOARD_SCALE_MAX, Math.max(BOARD_SCALE_MIN, stepped));
+}
+
+/**
+ * Ein Schritt der drei Board-Größe-Befehle (001, Ergänzung 2026-10-24);
+ * `current` ist bereits normalisiert. An einer Grenze ändert ein weiterer
+ * Schritt in diese Richtung nichts (S44).
+ */
+export function stepBoardScale(current: number, action: 'in' | 'out' | 'reset'): number {
+  if (action === 'reset') return BOARD_SCALE_DEFAULT;
+  const delta = action === 'in' ? BOARD_SCALE_STEP : -BOARD_SCALE_STEP;
+  return Math.min(BOARD_SCALE_MAX, Math.max(BOARD_SCALE_MIN, current + delta));
+}
+
 export type CardField =
   | 'ticket'
   | 'planned'
@@ -164,6 +229,28 @@ const DEFAULT_LINK_KINDS: LinkKind[] = [
   { key: 'adr', label: 'ADR', icon: 'scale', prefix: 'ADR_' },
 ];
 
+/**
+ * Result is a fixed free-link kind outside `linkKinds` (002, Ergänzung
+ * 2026-10-19 "Result"): it never comes from `resolveLinkKinds`/`linkKinds`
+ * settings, cannot be removed, and only its position among the configured
+ * kinds is stored (`resultPosition`).
+ */
+export const RESULT_LINK_KIND: LinkKind = { key: 'results', label: 'Result', icon: 'file-check-2' };
+
+/**
+ * Inserts {@link RESULT_LINK_KIND} into a resolved `linkKinds` list at the
+ * clamped `position` (undefined or out of range: at the end), unless a kind
+ * already named `results` is configured there — an unlikely hand-edit that
+ * must win over the fixed one rather than collide with it.
+ */
+export function withResultKind(kinds: LinkKind[], position?: number): LinkKind[] {
+  if (kinds.some((k) => k.key === RESULT_LINK_KIND.key)) return kinds;
+  const index = position === undefined ? kinds.length : Math.max(0, Math.min(position, kinds.length));
+  const next = [...kinds];
+  next.splice(index, 0, RESULT_LINK_KIND);
+  return next;
+}
+
 export interface ProjectSettings {
   key: string;
   name: string;
@@ -179,6 +266,8 @@ export interface ProjectSettings {
   /** `ktm_hidden: true` (006 addendum 2026-09-24, F085): the project stays in
    * the settings list but disappears from every view, "Alle" and "Heute". */
   hidden?: boolean;
+  /** Hinterlegte Tags mit Icon aus `ktm_tags`, ergänzt die allgemeinen (006, Ergänzung 2026-10-25 "Tags mit Icon"). */
+  tags?: TagEntry[];
 }
 
 export interface ResolvedProjects {
@@ -186,7 +275,7 @@ export interface ResolvedProjects {
   notices: string[];
 }
 
-export type ColumnRole = 'open' | 'done' | 'wont-do';
+export type ColumnRole = 'open' | 'active' | 'done' | 'wont-do';
 
 export interface Column {
   status: string;
@@ -262,10 +351,24 @@ export function resolveProjectSettings(entries: FileEntry[]): ResolvedProjects {
         ownNotices.push(`Projektnotiz ${note.path}: „ktm_card_fields“ ist ungültig und wird ignoriert.`);
       }
     }
-    if (project.columns !== undefined) {
-      const parsed = parseColumns(project.columns, project.doneColumns);
+    if (note.frontmatter.ktm_tags !== undefined) {
+      const tags = parseTagList(note.frontmatter.ktm_tags);
+      if (tags) project.tags = tags;
+      else ownNotices.push(`Projektnotiz ${note.path}: „ktm_tags“ ist ungültig und wird ignoriert.`);
+    }
+    // The raw list, not project.columns: stringList() already dropped every
+    // non-string entry, so a ktm_columns made only of numbers would reach
+    // parseColumns as an empty, already-undefined list and produce no notice
+    // at all (F122 K12, #955).
+    const rawColumns = note.frontmatter.ktm_columns;
+    if (Array.isArray(rawColumns) && rawColumns.length > 0) {
+      const parsed = parseColumns(rawColumns, project.doneColumns);
       if (parsed) ownNotices.push(...parsed.notices.map((n) => `Projektnotiz ${note.path}: ${n}`));
-      else ownNotices.push(`Projektnotiz ${note.path}: „ktm_columns“ ist ungültig und wird ignoriert.`);
+      else {
+        ownNotices.push(
+          `Projektnotiz ${note.path}: „ktm_columns“ enthält keine gültige Spalte, allgemeine Spalten gelten.`,
+        );
+      }
     }
     projects.push(project);
     seen.set(key, project);
@@ -324,6 +427,28 @@ export function withoutHiddenProjects(
   };
 }
 
+/**
+ * Orders project-like entries for the project list and everywhere projects
+ * are shown in sequence (006, Ergänzung 2026-10-19): `intern`, if present,
+ * always first, regardless of `order`. Without `order`, the rest sorts by
+ * `name` (`localeCompare`, `sensitivity: 'base'`, so case makes no
+ * difference), ties broken by `key`. With `order`, entries whose key appears
+ * in it keep that rank; a stale key in `order` with no matching entry is
+ * simply skipped; entries missing from `order` (new projects) are appended,
+ * sorted the same way as the no-order case.
+ */
+export function orderProjects<T extends { key: string; name: string }>(items: T[], order?: string[]): T[] {
+  const intern = items.filter((item) => item.key === 'intern');
+  const rest = items.filter((item) => item.key !== 'intern');
+  const byName = (a: T, b: T) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || a.key.localeCompare(b.key);
+  if (!order) return [...intern, ...rest.slice().sort(byName)];
+
+  const rank = new Map(order.filter((key) => key !== 'intern').map((key, index) => [key, index]));
+  const known = rest.filter((item) => rank.has(item.key)).sort((a, b) => rank.get(a.key)! - rank.get(b.key)!);
+  const unknown = rest.filter((item) => !rank.has(item.key)).sort(byName);
+  return [...intern, ...known, ...unknown];
+}
+
 const INVALID_ROOT_PATTERN = /\\|^\/|^[a-zA-Z]:/;
 
 /**
@@ -372,10 +497,24 @@ export function columnKey(name: string): string {
   return COLUMN_KEY_PATTERN.test(slug) ? slug : `col-${slug}`;
 }
 
-function roleForKey(key: string): ColumnRole {
+/**
+ * The role of a column key (006, Ergänzung 2026-10-25 "Spaltenrolle aktiv"):
+ * `done`/`wont-do` always carry their own reserved role, regardless of
+ * `explicit` (#648, the role follows the key, not a stored value). `doing`
+ * defaults to active, every other key to open; `explicit`, the role read
+ * from `data.json` or the note, overrides that default only for a key that
+ * is not itself an end role.
+ */
+function roleForKey(key: string, explicit?: 'aktiv' | 'offen'): ColumnRole {
   if (key === 'done') return 'done';
   if (key === 'wont-do') return 'wont-do';
-  return 'open';
+  if (explicit === 'aktiv') return 'active';
+  if (explicit === 'offen') return 'open';
+  return key === 'doing' ? 'active' : 'open';
+}
+
+function isEndRole(role: ColumnRole): boolean {
+  return role === 'done' || role === 'wont-do';
 }
 
 // `all`/`internal` are the board's own view ids (VIEW_ALL/VIEW_INTERNAL,
@@ -484,80 +623,63 @@ function isColumnConfig(value: unknown): value is ColumnConfig {
   return typeof v.key === 'string' && typeof v.name === 'string';
 }
 
+/** The eingebauten Standardspalten (006 S57): shared by `DEFAULT_SETTINGS.columns`
+ * (main.ts) and resolveColumns' own last resort, so there is exactly one list. */
+export const DEFAULT_COLUMNS: ColumnConfig[] = [
+  { key: 'backlog', name: 'Backlog' },
+  { key: 'ready', name: 'Ready' },
+  { key: 'doing', name: 'Doing' },
+  { key: 'done', name: 'Done' },
+  { key: 'wont-do', name: "Won't Do" },
+];
+
+// parseColumns always succeeds on DEFAULT_COLUMNS (well-formed, unique keys),
+// computed once instead of re-parsing it on every resolveColumns fallback.
+const RESOLVED_DEFAULT_COLUMNS: Column[] = DEFAULT_COLUMNS.map((c) => {
+  const role = roleForKey(c.key);
+  return { status: c.key, name: c.name, done: isEndRole(role), role };
+});
+
+/** A short JSON rendering of an unusable column entry for a notice (K9/K10). */
+function describeEntry(entry: unknown): string {
+  try {
+    return JSON.stringify(entry);
+  } catch {
+    return String(entry);
+  }
+}
+
+function unusableEntryNotice(entry: unknown): string {
+  return `Unbrauchbarer Spalten-Eintrag ${describeEntry(entry)} wird übersprungen.`;
+}
+
 /**
  * Parses a raw column list plus its done-column list (`ktm_columns` /
  * `ktm_done_columns` or their `data.json` counterparts) into `Column`s with
- * key, name and role (006, addendum 2026-09-22). `data.json` stores the
- * general columns as `{key, name}` objects (F069); every entry containing `|`
- * is the note's flat-string new form `key | name`; either way the role
- * follows only from the reserved key (`done`, `wont-do`). No entry containing
- * `|` is the old form, a plain name list where the first `doneColumns` entry
- * becomes `done`, the second `wont-do`, and further ones are reported and
- * stay open (K4-K6). A name whose own slug differs from the assigned key
+ * key, name and role (006, addendum 2026-09-22; Ergänzung 2026-10-18 "Eintrag
+ * für Eintrag"). Every entry is read for itself, in any mix: an object
+ * `{key, name}` is the `data.json` form; a string containing `|` is the
+ * note's flat-string new form `key | name`; a plain string without `|` is the
+ * old form (a display name, its role coming from position in
+ * `rawDoneColumns`, like the pre-2026-10-18 `parseOldFormColumns`). Either way
+ * the role of an object or new-form entry follows only from the reserved key
+ * (`done`, `wont-do`). A name whose own slug differs from the assigned key
  * becomes an alias, so a note with the old `status` value keeps finding its
- * column (K2, K5). A duplicate key is reported and the later entry dropped
- * (K3). A malformed entry (wrong separator count, invalid key, object without
- * a valid key or name) or a list mixing string and object forms invalidates
- * the whole list: `null`, the caller falls back to the general columns
- * (pattern of {@link parseLevelList}, S30).
+ * column (K2, K5 of 008). A malformed or otherwise unusable entry (wrong
+ * separator count, invalid key, object without a valid key or name, a
+ * duplicate key, or any value that is neither a column object nor a string)
+ * is skipped and reported by itself, naming the entry (K8-K10); the other
+ * entries still become columns. `null` only when not a single entry produced
+ * a column (S60): the caller falls back further (resolveColumns).
  */
 export function parseColumns(rawColumns: unknown, rawDoneColumns: unknown): ParsedColumns | null {
   if (!Array.isArray(rawColumns) || rawColumns.length === 0) return null;
-  if (rawColumns.every(isColumnConfig)) return parseObjectFormColumns(rawColumns as ColumnConfig[]);
-  if (!rawColumns.every((v): v is string => typeof v === 'string')) return null;
-  const entries = rawColumns as string[];
-  const pipeCounts = entries.map((e) => e.includes('|'));
-  const allPipe = pipeCounts.every(Boolean);
-  const nonePipe = pipeCounts.every((v) => !v);
-  if (!allPipe && !nonePipe) return null;
-  return allPipe ? parseNewFormColumns(entries) : parseOldFormColumns(entries, rawDoneColumns);
-}
 
-function parseObjectFormColumns(entries: ColumnConfig[]): ParsedColumns | null {
-  const notices: string[] = [];
-  const columns: Column[] = [];
-  const seenKeys = new Set<string>();
-  for (const entry of entries) {
-    const { key, name } = entry;
-    if (!key || !name || !COLUMN_KEY_PATTERN.test(key)) return null;
-    if (seenKeys.has(key)) {
-      notices.push(`Doppelter Spaltenschlüssel „${key}“ wird ignoriert.`);
-      continue;
-    }
-    seenKeys.add(key);
-    const role = roleForKey(key);
-    columns.push({ status: key, name, done: role !== 'open', role });
-  }
-  return { columns, notices };
-}
-
-function parseNewFormColumns(entries: string[]): ParsedColumns | null {
-  const notices: string[] = [];
-  const columns: Column[] = [];
-  const seenKeys = new Set<string>();
-  for (const entry of entries) {
-    const parts = entry.split('|').map((p) => p.trim());
-    if (parts.length !== 2) return null;
-    const [key, name] = parts;
-    if (!key || !name || !COLUMN_KEY_PATTERN.test(key)) return null;
-    if (seenKeys.has(key)) {
-      notices.push(`Doppelter Spaltenschlüssel „${key}“ wird ignoriert.`);
-      continue;
-    }
-    seenKeys.add(key);
-    const role = roleForKey(key);
-    columns.push({ status: key, name, done: role !== 'open', role });
-  }
-  return { columns, notices };
-}
-
-function parseOldFormColumns(entries: string[], rawDoneColumns: unknown): ParsedColumns | null {
   const doneNames = Array.isArray(rawDoneColumns)
     ? rawDoneColumns.filter((v): v is string => typeof v === 'string')
     : [];
-
-  const notices: string[] = [];
   const roleByOldSlug = new Map<string, ColumnRole>();
+  const notices: string[] = [];
   doneNames.forEach((doneName, i) => {
     const slug = slugifyStatus(doneName);
     if (i === 0) roleByOldSlug.set(slug, 'done');
@@ -567,20 +689,81 @@ function parseOldFormColumns(entries: string[], rawDoneColumns: unknown): Parsed
 
   const seenKeys = new Set<string>();
   const columns: Column[] = [];
-  for (const name of entries) {
-    const oldSlug = slugifyStatus(name);
-    const role = roleByOldSlug.get(oldSlug) ?? 'open';
-    const key: string =
-      role !== 'open' ? role : COLUMN_KEY_PATTERN.test(oldSlug) ? oldSlug : columnKey(name);
+  const addColumn = (key: string, column: Column): void => {
     if (seenKeys.has(key)) {
       notices.push(`Doppelter Spaltenschlüssel „${key}“ wird ignoriert.`);
-      continue;
+      return;
     }
     seenKeys.add(key);
-    const column: Column = { status: key, name, done: role !== 'open', role };
-    if (oldSlug !== key) column.aliases = [oldSlug];
     columns.push(column);
+  };
+
+  // Reads an explicit third value (object `role` or the note's third `|`
+  // part): `undefined` when absent, the parsed role when it is "aktiv" or
+  // "offen", and `null` for anything else — unusable on an open key, but
+  // ignored on an end key, whose role never comes from this value anyway
+  // (006, Ergänzung 2026-10-25).
+  const explicitRole = (raw: unknown, isEnd: boolean): 'aktiv' | 'offen' | undefined | null => {
+    if (raw === undefined) return undefined;
+    if (raw === 'aktiv' || raw === 'offen') return raw;
+    return isEnd ? undefined : null;
+  };
+
+  for (const entry of rawColumns) {
+    if (isColumnConfig(entry)) {
+      const { key, name } = entry;
+      if (!key || !name || !COLUMN_KEY_PATTERN.test(key)) {
+        notices.push(unusableEntryNotice(entry));
+        continue;
+      }
+      const isEnd = key === 'done' || key === 'wont-do';
+      const explicit = explicitRole((entry as ColumnConfig).role, isEnd);
+      if (explicit === null) {
+        notices.push(unusableEntryNotice(entry));
+        continue;
+      }
+      const role = roleForKey(key, explicit);
+      addColumn(key, { status: key, name, done: isEndRole(role), role });
+      continue;
+    }
+    if (typeof entry === 'string' && entry.includes('|')) {
+      const parts = entry.split('|').map((p) => p.trim());
+      const [key, name, rawRole] = parts;
+      if (parts.length < 2 || parts.length > 3 || !key || !name || !COLUMN_KEY_PATTERN.test(key)) {
+        notices.push(unusableEntryNotice(entry));
+        continue;
+      }
+      const isEnd = key === 'done' || key === 'wont-do';
+      const explicit = explicitRole(rawRole, isEnd);
+      if (explicit === null) {
+        notices.push(unusableEntryNotice(entry));
+        continue;
+      }
+      const role = roleForKey(key, explicit);
+      addColumn(key, { status: key, name, done: isEndRole(role), role });
+      continue;
+    }
+    if (typeof entry === 'string') {
+      const oldSlug = slugifyStatus(entry);
+      // The old form's done/wont-do role comes only from position in
+      // rawDoneColumns, never from the slug matching "done" by coincidence
+      // (#644/#648: a column merely named "Done" stays open unless listed).
+      // "doing" is the one slug that does get a role from itself, by the
+      // same default as every other form (006, Ergänzung 2026-10-25,
+      // "Standard gilt auch in der alten Form").
+      const endRole = roleByOldSlug.get(oldSlug);
+      const role: ColumnRole = endRole ?? (oldSlug === 'doing' ? 'active' : 'open');
+      const isEnd = isEndRole(role);
+      const key: string = isEnd ? role : COLUMN_KEY_PATTERN.test(oldSlug) ? oldSlug : columnKey(entry);
+      const column: Column = { status: key, name: entry, done: isEnd, role };
+      if (oldSlug !== key) column.aliases = [oldSlug];
+      addColumn(key, column);
+      continue;
+    }
+    notices.push(unusableEntryNotice(entry));
   }
+
+  if (columns.length === 0) return null;
   return { columns, notices };
 }
 
@@ -626,15 +809,33 @@ export function columnMembers(
 }
 
 /**
- * Resolves the columns a project shows: its own column list if it parses,
- * otherwise the general default (parseColumns' merge pattern). Without a
- * project, as in the `all` view, the general columns apply.
+ * Resolves the columns a project shows: its own column list if at least one
+ * entry parses, otherwise the general list if at least one entry of that
+ * parses, otherwise the eingebauten {@link DEFAULT_COLUMNS} (006, Ergänzung
+ * 2026-10-18 "Keine gültige Spalte"). Never an empty list (S60); without a
+ * project, as in the `all` view, only the general columns apply.
  */
 export function resolveColumns(general: GeneralSettings, project?: ProjectSettings): Column[] {
-  const rawColumns = project?.columns ?? general.columns;
-  const rawDoneColumns = project?.doneColumns ?? general.doneColumns;
-  const parsed = parseColumns(rawColumns, rawDoneColumns) ?? parseColumns(general.columns, general.doneColumns);
-  return parsed ? parsed.columns : [];
+  if (project?.columns !== undefined) {
+    const own = parseColumns(project.columns, project.doneColumns);
+    if (own) return own.columns;
+  }
+  const parsed = parseColumns(general.columns, general.doneColumns);
+  return parsed ? parsed.columns : RESOLVED_DEFAULT_COLUMNS;
+}
+
+/**
+ * The hint-area notices for the general `columns` setting alone (006,
+ * Ergänzung 2026-10-18 "data.json: " Präfix, Muster der Projektnotiz-Hinweise
+ * in {@link resolveProjectSettings}): every per-entry notice from parsing
+ * `data.json`'s own `columns`, or, when none of its entries parse at all, one
+ * notice saying so and that the Standardspalten apply (S60/K12).
+ */
+export function generalColumnNotices(general: Pick<GeneralSettings, 'columns' | 'doneColumns'>): string[] {
+  const prefix = 'data.json: ';
+  const parsed = parseColumns(general.columns, general.doneColumns);
+  if (!parsed) return [`${prefix}„columns“ enthält keine gültige Spalte, Standardspalten gelten.`];
+  return parsed.notices.map((n) => `${prefix}${n}`);
 }
 
 const LINK_KIND_KEY_PATTERN = /^[a-z][a-z0-9_-]*$/;
@@ -738,6 +939,92 @@ export function parseCardFieldList(raw: unknown): CardField[] | null {
     fields.push(value);
   }
   return fields;
+}
+
+export interface TagEntry {
+  tag: string;
+  icon?: string;
+}
+
+// Obsidian's own tag form: letters, digits, `_`, `-`, and `/` for sub-tags, no
+// `#`, no whitespace (006, Ergänzung 2026-10-25 "Tags mit Icon").
+const TAG_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]*(\/[A-Za-z0-9_][A-Za-z0-9_-]*)*$/;
+
+/** Whether `tag` has Obsidian's tag form, without the leading `#`. */
+export function isValidTag(tag: string): boolean {
+  return TAG_PATTERN.test(tag);
+}
+
+/**
+ * Parses the flat note encoding of a tag list, `"tag"` or `"tag | icon"` per
+ * entry (006, Ergänzung 2026-10-25 "Tags mit Icon"), mirroring
+ * {@link parseLevelList}. Any single malformed entry (invalid tag, empty
+ * icon after a separator, duplicate tag without regard to case) invalidates
+ * the whole list; the caller falls back to the general tags and reports the
+ * note and key.
+ */
+export function parseTagList(raw: unknown): TagEntry[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const seen = new Set<string>();
+  const tags: TagEntry[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string') return null;
+    const parts = entry.split('|').map((p) => p.trim());
+    if (parts.length !== 1 && parts.length !== 2) return null;
+    const [tag, icon] = parts;
+    if (!tag || !isValidTag(tag)) return null;
+    if (parts.length === 2 && !icon) return null;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) return null;
+    seen.add(key);
+    tags.push(icon ? { tag, icon } : { tag });
+  }
+  return tags;
+}
+
+/**
+ * Resolves the general tags: `tagList` from `data.json`, with every
+ * individually unbrauchbar (invalid or case-insensitively duplicate) entry
+ * dropped, same pattern as {@link resolveLevels}. A missing or empty list
+ * resolves to an empty list, not a built-in default — unlike levels or link
+ * kinds, tags have no fallback (006, Ergänzung 2026-10-25).
+ */
+export function resolveTagList(general?: Pick<GeneralSettings, 'tagList'>): TagEntry[] {
+  const raw: unknown = general?.tagList;
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const tags: TagEntry[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.tag !== 'string' || !isValidTag(e.tag)) continue;
+    const key = e.tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const icon = typeof e.icon === 'string' && e.icon ? e.icon : undefined;
+    tags.push(icon ? { tag: e.tag, icon } : { tag: e.tag });
+  }
+  return tags;
+}
+
+/**
+ * The wirksame Liste eines Projekts (006, Ergänzung 2026-10-25): its own tags
+ * in their stored order, then the general tags, skipping any that already
+ * appear in the project's own list (ohne Rücksicht auf Groß- und
+ * Kleinschreibung) — so a project's icon wins over the general one for the
+ * same tag (S98/S99, K1).
+ */
+export function effectiveTags(general: Pick<GeneralSettings, 'tagList'>, project?: Pick<ProjectSettings, 'tags'>): TagEntry[] {
+  const own = project?.tags ?? [];
+  const seen = new Set(own.map((t) => t.tag.toLowerCase()));
+  const result = [...own];
+  for (const tag of resolveTagList(general)) {
+    const key = tag.tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(tag);
+  }
+  return result;
 }
 
 export function slugifyStatus(name: string): string {

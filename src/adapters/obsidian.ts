@@ -1,15 +1,19 @@
-import { type App, getFrontMatterInfo, MarkdownView, TFile, TFolder } from 'obsidian';
+import { type App, getFrontMatterInfo, MarkdownView, Notice, TFile, TFolder } from 'obsidian';
 import { formatParentLink } from '../core/create';
-import { applyFrontmatter, type FrontmatterChange } from '../core/frontmatter';
+import { applyFrontmatter, flowList, type FrontmatterChange } from '../core/frontmatter';
 import { FORMAT_NOTE_PATH, GUIDE_NOTE_PATH } from '../core/guide';
+import { classifyTarget, mergeInto, type MergeFs } from '../core/merge';
 import { isLegacyNoteName, type MigrationProtocol, type MigrationProtocolItem } from '../core/migrate';
 import type { FileEntry, ProjectRoot } from '../core/model';
+import { insertIntoRoot, rewriteGitattributes, rewriteGitignore, rewriteQueryBlocks, rewriteQueryText, type RewriteResult } from '../core/pathfollow';
+import { linksOf } from '../core/read';
 import type { FileSource } from '../core/vault-index';
 
 const ATOMIC_PREFIX = '_Tasks/Atomic/';
 const ARCHIVE_SEGMENT = 'Archive';
 const CLAUDE_MD_PATH = 'CLAUDE.md';
 const LLM_LINK_LINE = `Anleitung für den Kanban Taskmanager: siehe ${GUIDE_NOTE_PATH}`;
+const NOTICE_DURATION = 15000;
 
 // The plugin's own recent moves (011, Ergänzung 2026-09-25, "Von Hand
 // verschoben"): moveElement remembers every move it makes here, for a couple
@@ -60,10 +64,32 @@ export function obsidianFileSource(app: App): FileSource {
       const frontmatter = { ...(cache?.frontmatter ?? {}) };
       delete frontmatter.position;
 
-      const raw = await app.vault.cachedRead(file);
+      // A file mid-move can fail `cachedRead` with ENOENT (Wissen #829: its
+      // `TFile.path` already points at the new location, but the disk move
+      // itself has not landed yet). Retried once against wherever the same
+      // TFile object now reports itself; truly gone by then is not an error,
+      // just nothing to read (008, Ergänzung 2026-10-18 "Lesen am neuen Ort").
+      let raw: string;
+      try {
+        raw = await app.vault.cachedRead(file);
+      } catch {
+        const current = app.vault.getFileByPath(file.path);
+        if (!current) return undefined;
+        try {
+          raw = await app.vault.cachedRead(current);
+        } catch {
+          return undefined;
+        }
+      }
       const info = getFrontMatterInfo(raw);
       const body = info.exists ? raw.slice(info.contentStart) : raw;
 
+      // `file.path` is read again here, not the `path` this call was asked
+      // for: by the time the read above actually landed, the same TFile may
+      // already report a different, newer path (it moved while this ran).
+      // The index (vault-index.ts#applyChange) keys its entry on exactly this
+      // value, so a note that moved mid-read is never briefly indexed under
+      // both its old and new path at once.
       return { path: file.path, frontmatter, body, ctime: file.stat.ctime };
     },
   };
@@ -146,63 +172,299 @@ export async function writeBody(app: App, path: string, body: string): Promise<v
 }
 
 /**
- * Moves an element to `to` via `FileManager.renameFile`, the only move that
- * pulls the vault's wikilinks along; a folder moves as a whole in one call
- * (011, Ergänzung 2026-09-25, "Der Ordner wandert als Ganzes ... in einem
- * einzigen Umbenennen"). `renameFile` does not create the target's parent, so
- * the parent folder is ensured to exist first. When `to` already exists as a
- * folder — a container whose Done mirror was seeded by an earlier child — the
- * element's own folder must never be the one taken apart: instead, whatever
- * already sits in the existing target is moved into the source folder first,
- * the now-empty target is trashed, and only then does the source rename to
- * `to` in one call, exactly like the plain case.
+ * {@link MergeFs} over the running app: `list`/`isFolder` read straight from
+ * the vault tree, `hasElementNote` asks the MetadataCache for `ktm_id` on the
+ * folder's direct `.md` children, `moveFile` is `fileManager.renameFile`
+ * (pulling wikilinks along per file), `createFolder` is `vault.createFolder`,
+ * `removeIfEmpty` is `vault.delete` and only ever fires when the folder's own
+ * `children` — read fresh, not cached, and filtered down to entries whose own
+ * path still resolves under this folder (wissen #781/#782: a child a
+ * `moveFile` just renamed away can briefly linger in the old parent's
+ * `children` while its own path already reports the new location) — is
+ * empty. A folder that is not empty on that first read gets exactly one
+ * recheck after letting such a lagging event settle, before it is left
+ * standing; `force: true` is needed even on an actually empty folder, since
+ * `Vault.delete` otherwise tries to remove it like a file and fails with
+ * `EISDIR` (measured, not in the API docs beyond "hidden children"). `onMoved`
+ * fires after every successful `moveFile`, so {@link
+ * moveElement} can keep renewing its `rememberOwnMove` window across a merge
+ * that outlasts a single file.
+ */
+function obsidianMergeFs(app: App, onMoved: () => void): MergeFs {
+  return {
+    async list(path: string): Promise<string[]> {
+      const folder = path === '' ? app.vault.getRoot() : app.vault.getAbstractFileByPath(path);
+      return folder instanceof TFolder ? folder.children.map((c) => c.name) : [];
+    },
+    async isFolder(path: string): Promise<boolean> {
+      const target = path === '' ? app.vault.getRoot() : app.vault.getAbstractFileByPath(path);
+      return target instanceof TFolder;
+    },
+    async hasElementNote(path: string): Promise<boolean> {
+      const folder = app.vault.getAbstractFileByPath(path);
+      if (!(folder instanceof TFolder)) return false;
+      return folder.children.some(
+        (c) => c instanceof TFile && typeof app.metadataCache.getFileCache(c)?.frontmatter?.ktm_id === 'string',
+      );
+    },
+    async moveFile(from: string, to: string): Promise<void> {
+      const file = app.vault.getAbstractFileByPath(from);
+      if (!(file instanceof TFile)) throw new Error(`Element nicht gefunden: ${from}`);
+      await app.fileManager.renameFile(file, to);
+      onMoved();
+    },
+    async createFolder(path: string): Promise<void> {
+      await ensureFolder(app, path);
+    },
+    async removeIfEmpty(path: string): Promise<void> {
+      const liveChildCount = (folder: TFolder): number =>
+        folder.children.filter((c) => c.path === (path === '' ? c.name : `${path}/${c.name}`)).length;
+      let folder = app.vault.getAbstractFileByPath(path);
+      if (!(folder instanceof TFolder)) return;
+      if (liveChildCount(folder) > 0) {
+        // A child moveFile just renamed away can briefly still sit in this
+        // folder's `children` (#781/#782); give that one tick to settle
+        // before giving up on an otherwise-empty folder.
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        folder = app.vault.getAbstractFileByPath(path);
+        if (!(folder instanceof TFolder) || liveChildCount(folder) > 0) return;
+      }
+      await app.vault.delete(folder, true);
+    },
+  };
+}
+
+/**
+ * Moves an element to `to` (008, Ergänzung 2026-10-19 "Der berechnete Ort ist
+ * schon belegt", replacing the collision handling from 008 S47/F068 K3): what
+ * happens is {@link classifyTarget}'s call against an {@link obsidianMergeFs}
+ * built over this app, decided up front, before anything moves, so a move is
+ * always either complete or entirely untouched (K5, "ganz oder gar nicht").
  *
- * Every collision this could hit is checked before anything moves (008 S47,
- * F068 K3): `to` already a file, `from` a file with `to` occupied by either
- * kind, or — the folder-merge case above — an entry of `to` sharing its name
- * with one already sitting in `from`. `renameFile` itself only refuses the
- * first two (#5); the merge case would otherwise silently overwrite or
- * partially move before failing, so it is checked up front the same way.
+ * `'free'` renames `from` to `to` in one call via `FileManager.renameFile`,
+ * the only move that pulls the vault's wikilinks along (011, Ergänzung
+ * 2026-09-25, "Der Ordner wandert als Ganzes"); `'merge'` — only ever offered
+ * by `classifyTarget` when `allowMerge` says so, decided by the caller from
+ * core/placement.ts#isInDoneMirror — runs {@link mergeInto} instead, moving
+ * every file of `from` to the same relative place under `to` and removing
+ * `from` only once it is actually empty; `'occupied'` throws with the reason
+ * `classifyTarget` found, naming the blocking path, and nothing moves at all.
+ * `renameFile` does not create the target's parent, so that parent is
+ * ensured to exist first either way.
  *
  * Every move this makes is remembered for a couple of seconds ({@link
- * recentOwnMoves}), so a rename event it causes is never mistaken for one
- * the user made by hand (011 K20/K21). If `renameFile` itself fails on a
- * plain move, the source folder's own files are checked one by one via
- * `readBinary` and the first unreadable one is named in the error (011 S92,
- * a file locked open elsewhere) — Obsidian gives no better reason on its own.
+ * recentOwnMoves}), renewed after each file a merge moves, so a rename event
+ * it causes is never mistaken for one the user made by hand (011 K20/K21). If
+ * a plain `renameFile` itself fails, the source folder's own files are
+ * checked one by one via `readBinary` and the first unreadable one is named
+ * in the error (011 S92, a file locked open elsewhere) — Obsidian gives no
+ * better reason on its own.
+ *
+ * Once the element itself has landed at `to`, {@link followPaths} pulls
+ * `.gitignore`, `.gitattributes` and query paths pointing at `from` along
+ * (008, Ergänzung 2026-10-19); the inner `renameFile` calls of a merge do not
+ * get this treatment, a failure there does not abort the move. Every message
+ * `followPaths` returns becomes its own Notice, same duration as the
+ * plugin's other write-failure hints.
  */
-export async function moveElement(app: App, from: string, to: string, parent: string): Promise<void> {
+export async function moveElement(app: App, from: string, to: string, parent: string, allowMerge: boolean): Promise<void> {
   const file = app.vault.getAbstractFileByPath(from);
   if (!file) throw new Error(`Element nicht gefunden: ${from}`);
 
-  const target = app.vault.getAbstractFileByPath(to);
-  if (target instanceof TFile || (file instanceof TFile && target)) {
-    throw new Error(`Ziel existiert bereits: ${to}`);
+  const fs = obsidianMergeFs(app, () => rememberOwnMove(from, to));
+  const classification = await classifyTarget(fs, from, to, allowMerge);
+  if (classification.kind === 'occupied') throw new Error(classification.reason);
+
+  await ensureFolder(app, parent);
+  rememberOwnMove(from, to);
+
+  const runMove =
+    classification.kind === 'merge' ? () => mergeInto(fs, from, to) : () => app.fileManager.renameFile(file, to);
+  try {
+    await runMove();
+  } catch (err) {
+    const locked = file instanceof TFolder ? await firstUnreadableFile(app, file) : undefined;
+    throw new Error(locked ? `Gesperrte Datei: ${locked}` : errorMessage(err));
   }
-  if (file instanceof TFolder && target instanceof TFolder) {
-    const existingNames = new Set(file.children.map((c) => c.name));
-    for (const child of target.children) {
-      if (existingNames.has(child.name)) {
-        throw new Error(`Ziel existiert bereits: ${from}/${child.name}`);
+
+  for (const message of await followPaths(app, from, to)) new Notice(message, NOTICE_DURATION);
+}
+
+/**
+ * Moves a document — not an element, no `ktm_id`, no ablageregel — to `to`
+ * (008, Ergänzung 2026-10-19 "Ein Result wandert zu seinem Ziel"): a plain
+ * `fileManager.renameFile` so the vault's wikilinks follow, then {@link
+ * followPaths} so `.gitignore`, `.gitattributes` and queries pointing at
+ * `from` follow too, same as {@link moveElement}. The target folder is
+ * created first if missing. Returns `followPaths`'s messages for the caller
+ * to show as Notices; throws only if the rename itself fails (occupied names
+ * are the caller's job via `planResult`'s `exists` predicate, checked before
+ * this runs).
+ */
+export async function moveDocument(app: App, from: string, to: string): Promise<string[]> {
+  const file = app.vault.getAbstractFileByPath(from);
+  if (!(file instanceof TFile)) throw new Error(`Datei nicht gefunden: ${from}`);
+  const cut = to.lastIndexOf('/');
+  if (cut !== -1) await ensureFolder(app, to.slice(0, cut));
+  await app.fileManager.renameFile(file, to);
+  return followPaths(app, from, to);
+}
+
+function wikilinkOf(link: { target: string; alias?: string }): string {
+  return link.alias ? `[[${link.target}|${link.alias}]]` : `[[${link.target}]]`;
+}
+
+/**
+ * Appends `file` to `key`'s free-link list on `notePath`'s own note, unless
+ * it is already there (005/008, Ergänzung 2026-10-19 "Results für Claude"/"Ein
+ * Result wandert zu seinem Ziel"): read fresh from the MetadataCache rather
+ * than a possibly stale `BoardElement`, so two calls racing the same note's
+ * own `changed` events never duplicate an entry (wissen #1178). Matches an
+ * existing entry by its resolved file, not its raw text (wissen #1186), the
+ * same rule {@link BoardView.appendResultLink} already follows — this is its
+ * View-free counterpart for main.ts.
+ */
+export async function appendFreeLink(app: App, notePath: string, key: string, file: TFile): Promise<void> {
+  const note = app.vault.getAbstractFileByPath(notePath);
+  const frontmatter = note instanceof TFile ? (app.metadataCache.getFileCache(note)?.frontmatter ?? {}) : {};
+  const existing = linksOf(frontmatter, [{ key, label: '', icon: '' }]).filter((l) => l.kind === key);
+  const already = existing.some((l) => app.metadataCache.getFirstLinkpathDest(l.target, notePath)?.path === file.path);
+  if (already) return;
+  const target = app.metadataCache.fileToLinktext(file, notePath, true);
+  const next = [...existing, { target }];
+  await writeFrontmatter(app, notePath, { [key]: flowList(next.map(wikilinkOf), true) });
+}
+
+const DOTFILE_REWRITERS = [
+  { name: '.gitignore', rewrite: rewriteGitignore },
+  { name: '.gitattributes', rewrite: rewriteGitattributes },
+] as const;
+
+/** Every folder above `path`, root (`''`) first, not including `path` itself. */
+function ancestorDirs(path: string): string[] {
+  const parts = path.split('/');
+  const dirs: string[] = [''];
+  for (let i = 0; i < parts.length - 1; i++) dirs.push(parts.slice(0, i + 1).join('/'));
+  return dirs;
+}
+
+/**
+ * Pulls `.gitignore`/`.gitattributes` entries and query paths pointing at
+ * `from` to `to` (008, Ergänzung 2026-10-19): `.gitignore` and
+ * `.gitattributes` are dot-files the vault index never sees, so this reads
+ * and writes them via `Vault.adapter`, the same documented exception
+ * `writeMigrationProtocol` already uses (konventionen.md, project contract
+ * F090, extended here to exactly these two names). Only the folders above
+ * `from`, root included, are read — a `.gitignore` can only match a path
+ * below its own folder. Notes and `.base` files go through `Vault.process`,
+ * the plugin's one sanctioned write path for them. Never throws: every
+ * failed write becomes a message in the returned array instead, and the
+ * move itself stays valid either way.
+ */
+export async function followPaths(app: App, from: string, to: string): Promise<string[]> {
+  const messages: string[] = [];
+  for (const { name, rewrite } of DOTFILE_REWRITERS) {
+    await followDotfile(app, name, rewrite, from, to, messages);
+  }
+  await followQueries(app, from, to, messages);
+  return messages;
+}
+
+async function followDotfile(
+  app: App,
+  name: '.gitignore' | '.gitattributes',
+  rewrite: (content: string, dir: string, from: string, to: string) => RewriteResult,
+  from: string,
+  to: string,
+  messages: string[],
+): Promise<void> {
+  const perDir = new Map<
+    string,
+    { original: string; content: string; changed: RewriteResult['changed']; toRoot: RewriteResult['toRoot'] }
+  >();
+  for (const dir of ancestorDirs(from)) {
+    const path = dir === '' ? name : `${dir}/${name}`;
+    let exists: boolean;
+    try {
+      exists = await app.vault.adapter.exists(path);
+    } catch {
+      continue;
+    }
+    if (!exists) continue;
+    let original: string;
+    try {
+      original = await app.vault.adapter.read(path);
+    } catch (err) {
+      messages.push(`${path}: konnte nicht gelesen werden (${errorMessage(err)})`);
+      continue;
+    }
+    const result = rewrite(original, dir, from, to);
+    perDir.set(dir, { original, content: result.content, changed: result.changed, toRoot: result.toRoot });
+  }
+
+  const toRootAll = [...perDir.entries()].filter(([dir]) => dir !== '').flatMap(([, r]) => r.toRoot);
+  const root = perDir.get('');
+  if (toRootAll.length > 0) {
+    if (root) {
+      root.content = insertIntoRoot(root.content, toRootAll);
+    } else {
+      for (const [dir, r] of perDir) {
+        if (dir === '' || r.toRoot.length === 0) continue;
+        for (const { entry } of r.toRoot) {
+          messages.push(`${dir}/${name}: Eintrag "${entry.before}" konnte nicht nachgezogen werden, keine ${name} im Wurzelverzeichnis`);
+        }
+        perDir.delete(dir);
       }
     }
   }
 
-  await ensureFolder(app, parent);
-
-  if (file instanceof TFolder && target instanceof TFolder) {
-    for (const child of [...target.children]) {
-      await app.fileManager.renameFile(child, `${from}/${child.name}`);
+  for (const [dir, r] of perDir) {
+    if (r.content === r.original) continue;
+    const path = dir === '' ? name : `${dir}/${name}`;
+    try {
+      await app.vault.adapter.write(path, r.content);
+    } catch (err) {
+      for (const { before } of r.changed) {
+        messages.push(`${path}: Eintrag "${before}" konnte nicht geschrieben werden (${errorMessage(err)})`);
+      }
+      if (r.changed.length === 0) messages.push(`${path}: konnte nicht geschrieben werden (${errorMessage(err)})`);
     }
-    await app.fileManager.trashFile(target);
+  }
+}
+
+async function followQueries(app: App, from: string, to: string, messages: string[]): Promise<void> {
+  for (const file of app.vault.getMarkdownFiles()) {
+    const cache = app.metadataCache.getFileCache(file);
+    if (!cache?.sections?.some((s) => s.type === 'code')) continue;
+    let content: string;
+    try {
+      content = await app.vault.cachedRead(file);
+    } catch {
+      continue;
+    }
+    if (!content.includes(from) || rewriteQueryBlocks(content, from, to) === content) continue;
+    try {
+      await flushOpenViews(app, file);
+      await app.vault.process(file, (data) => rewriteQueryBlocks(data, from, to));
+    } catch (err) {
+      messages.push(`${file.path}: ${from} konnte nicht aktualisiert werden (${errorMessage(err)})`);
+    }
   }
 
-  rememberOwnMove(from, to);
-  try {
-    await app.fileManager.renameFile(file, to);
-  } catch (err) {
-    const locked = file instanceof TFolder ? await firstUnreadableFile(app, file) : undefined;
-    throw new Error(locked ? `Gesperrte Datei: ${locked}` : errorMessage(err));
+  for (const file of app.vault.getFiles()) {
+    if (file.extension !== 'base') continue;
+    let content: string;
+    try {
+      content = await app.vault.cachedRead(file);
+    } catch {
+      continue;
+    }
+    if (!content.includes(from) || rewriteQueryText(content, from, to) === content) continue;
+    try {
+      await app.vault.process(file, (data) => rewriteQueryText(data, from, to));
+    } catch (err) {
+      messages.push(`${file.path}: ${from} konnte nicht aktualisiert werden (${errorMessage(err)})`);
+    }
   }
 }
 

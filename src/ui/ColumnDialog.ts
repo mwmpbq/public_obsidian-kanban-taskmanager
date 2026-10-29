@@ -67,11 +67,13 @@ export class ColumnDialog extends Modal {
     if (this.options.kind === 'confirm') {
       this.setTitle('Spalte entfernen');
       const roleWord = this.options.role === 'done' ? 'erledigt' : 'verworfen';
+      const verb = this.count === 1 ? 'bleibt' : 'bleiben';
+      const liegt = this.count === 1 ? 'liegt' : 'liegen';
       this.contentEl.createEl('p', {
-        text: `${this.count} ${noun} in „${this.columnName}“ bleiben ${roleWord} und liegen weiterhin unter Done/.`,
+        text: `${this.count} ${noun} ${verb} ${roleWord} und ${liegt} weiterhin unter Done/.`,
       });
       this.contentEl.createEl('p', {
-        text: `Ohne diese Spalte erscheinen sie nicht auf dem Board. Sie kommen zurück, sobald wieder eine Spalte mit der Rolle ${roleWord} angelegt wird.`,
+        text: `Ohne die Spalte „${this.columnName}“ erscheinen sie nicht auf dem Board. Sie kommen zurück, sobald wieder eine Spalte mit der Rolle ${roleWord} angelegt wird.`,
       });
       new Setting(this.contentEl)
         .addButton((button) => button.setButtonText('Abbrechen').onClick(() => this.close()))

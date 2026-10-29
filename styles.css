@@ -23,7 +23,32 @@
   --ktm-column-min: 280px;
   --ktm-today-header: 32px;
   --ktm-today-tile: 180px;
+  --ktm-week-day-min: 190px;
+  --ktm-week-weekend-min: 130px;
+  --ktm-week-nodate: 270px;
+  --ktm-agenda-max: 1500px;
+  --ktm-agenda-cols: minmax(220px, 1fr) 100px 100px 100px 24px 80px minmax(150px, 240px) minmax(90px, 170px);
+  --ktm-agenda-head: 30px;
+  --ktm-agenda-row-min: 36px;
+  --ktm-tree-row: 34px;
+  --ktm-tree-indent: 22px;
+  --ktm-tree-cols: minmax(260px, 1fr) 130px 100px 100px 100px 140px;
+  --ktm-tree-progress-w: 90px;
+  --ktm-tree-progress-h: 5px;
+  --ktm-road-label: 260px;
+  --ktm-road-head-top: 22px;
+  --ktm-road-head-bottom: 20px;
+  --ktm-road-row: 38px;
+  --ktm-road-row-project: 36px;
+  --ktm-road-point: 9px;
+  --ktm-road-diamond: 7px;
+  --ktm-retro-max: 1400px;
+  --ktm-retro-side: 220px;
+  --ktm-retro-bars-h: 36px;
+  --ktm-port-min: 400px;
+  --ktm-port-bar-h: 8px;
   --ktm-expanded-factor: 3;
+  --ktm-viewswitch-radius: 6px;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -54,20 +79,187 @@
   gap: var(--size-4-2);
 }
 
+/* Darstellungs-Schalter (012, Ergänzung 2026-10-25 "Darstellungen"; DESIGN.md
+   Komponente "Darstellungs-Schalter"): direkt rechts von "Neue Aufgabe", in
+   jedem Buttonstil gleich (keine [data-button-style]-Abhängigkeit). */
+.ktm-viewswitch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  /* .ktm-toolbar traegt bereits "gap: var(--size-4-2)" (8px) zwischen allen
+     Kindern; hier auf den gewuenschten Abstand von 4px zu "Neue Aufgabe"
+     zurueckgefuehrt, statt sich zu addieren. */
+  margin-left: calc(var(--size-4-1) - var(--size-4-2));
+}
+
+/* ".ktm-viewswitch " vorangestellt (statt nur ".ktm-viewswitch-button"), damit
+   die Spezifitaet Obsidians eigenes "button:not(.clickable-icon)" (ebenfalls
+   mit color-Deklaration) sicher schlaegt, unabhaengig von der Ladereihenfolge
+   der Stylesheets (gemessen: ohne den Vorfahren blieb color bei allen nicht
+   gewaehlten Buttons auf --text-normal statt --text-faint). */
+.ktm-viewswitch .ktm-viewswitch-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: var(--ktm-viewswitch-radius);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-viewswitch .ktm-viewswitch-button:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.ktm-viewswitch .ktm-viewswitch-button[data-active='true'] {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.ktm-viewswitch-button svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-viewswitch-button[data-dragging='true'] {
+  opacity: 0.4;
+}
+
+/* Einfügestrich beim Ziehen eines Icons (012 S3): 2 × 20 px, mittig in der
+   Lücke vor dem Ziel-Icon, kein Rahmen um ein Icon. */
+.ktm-viewswitch-marker {
+  position: absolute;
+  top: 5px;
+  width: 2px;
+  height: 20px;
+  border-radius: 1px;
+  background: var(--interactive-accent);
+  pointer-events: none;
+}
+
+/* Buttonstil (006, Ergänzung 2026-10-25; DESIGN.md §Buttonstil). Vier
+   Stile, Standard Ghost, als Variablen auf dem Attribut `data-button-style`,
+   das sowohl `.ktm-board` als auch die Vorschau der Einstellungsseite trägt
+   (`.ktm-buttonstyle-preview`, SettingsTab#renderButtonStylePreview). Die
+   Grundform-Klassen (Button, Ebenen-Segment, Ansicht-Menü, Board-Größe,
+   Dropdowns der Karte) lesen diese Variablen statt eigener Literale je Stil. */
+[data-button-style='basic'] {
+  --ktm-btn-bg: var(--interactive-normal);
+  --ktm-btn-color: var(--text-normal);
+  --ktm-btn-radius: 4px;
+  --ktm-btn-height: var(--input-height);
+  --ktm-card-height: 30px;
+  --ktm-btn-border: none;
+  --ktm-btn-shadow: none;
+  --ktm-btn-hover-bg: var(--interactive-hover);
+  --ktm-btn-hover-color: var(--text-normal);
+  --ktm-btn-hover-border: none;
+}
+
+[data-button-style='ghost'] {
+  --ktm-btn-bg: transparent;
+  --ktm-btn-color: var(--text-muted);
+  --ktm-btn-radius: 6px;
+  --ktm-btn-height: var(--input-height);
+  --ktm-card-height: 28px;
+  --ktm-btn-border: none;
+  --ktm-btn-shadow: none;
+  --ktm-btn-hover-bg: var(--background-modifier-hover);
+  --ktm-btn-hover-color: var(--text-normal);
+  --ktm-btn-hover-border: none;
+}
+
+[data-button-style='outline'] {
+  --ktm-btn-bg: transparent;
+  --ktm-btn-color: var(--text-normal);
+  --ktm-btn-radius: var(--radius-m);
+  --ktm-btn-height: var(--input-height);
+  --ktm-card-height: 28px;
+  --ktm-btn-border: 1px solid var(--background-modifier-border-hover);
+  --ktm-btn-shadow: none;
+  --ktm-btn-hover-bg: var(--background-modifier-hover);
+  --ktm-btn-hover-color: var(--text-normal);
+  --ktm-btn-hover-border: 1px solid var(--background-modifier-border-focus);
+}
+
+[data-button-style='keycap'] {
+  --ktm-btn-bg: var(--interactive-normal);
+  --ktm-btn-color: var(--text-normal);
+  --ktm-btn-radius: 6px;
+  --ktm-btn-height: 28px;
+  --ktm-card-height: 26px;
+  --ktm-btn-border: none;
+  --ktm-btn-shadow:
+    0 2px 0 var(--background-modifier-box-shadow),
+    inset 0 1px 0 var(--background-modifier-hover);
+  --ktm-btn-hover-bg: var(--interactive-hover);
+  --ktm-btn-hover-color: var(--text-normal);
+  --ktm-btn-hover-border: none;
+}
+
+/* Trennstriche (006, Ergänzung 2026-10-25): nur im Stil Ghost sichtbar, je
+   einer zwischen Filterfeld, Ebenen-Schalter, Ansicht-Menü und Board-Größe
+   (BoardView#renderToolbar setzt sie nur zwischen vorhandenen Teilen). */
+.ktm-toolbar-sep {
+  display: none;
+  flex: none;
+  width: 1px;
+  height: 16px;
+  background: var(--background-modifier-border);
+}
+
+[data-button-style='ghost'] .ktm-toolbar-sep {
+  display: block;
+}
+
 .ktm-button {
-  height: var(--input-height);
   display: inline-flex;
   align-items: center;
   gap: var(--ktm-ticket-gap);
   padding: 0 var(--size-4-3);
+  font-size: var(--font-ui-small);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Grundform von vor F191, fuer Buttons ausserhalb von [data-button-style] wie
+   den Sprungknopf zur Projektnotiz (SettingsTab#renderProjectRow). Die eigene
+   Klasse wird wiederholt, um Obsidians button:not(.clickable-icon) (0,1,1) zu
+   schlagen, ohne !important (wissen 615, 1251); [data-button-style]
+   .ktm-button hat dieselbe Spezifitaet und steht im Quelltext danach, deshalb
+   gewinnt sie dort weiter (Board, Vorschau). */
+.ktm-button.ktm-button {
+  height: var(--input-height);
   border: none;
   border-radius: var(--radius-s);
   background: var(--interactive-normal);
   box-shadow: none;
   color: var(--text-normal);
-  font-size: var(--font-ui-small);
-  white-space: nowrap;
-  cursor: pointer;
+}
+
+/* [data-button-style] hebt die Spezifität über Obsidians eigene
+   Button-Grundform (sonst gewinnt ein einfacher Klassenselektor dagegen
+   nicht immer, gemessen an .ktm-scale-down/.ktm-level-button). */
+[data-button-style] .ktm-button {
+  height: var(--ktm-btn-height);
+  border: var(--ktm-btn-border);
+  border-radius: var(--ktm-btn-radius);
+  background: var(--ktm-btn-bg);
+  box-shadow: var(--ktm-btn-shadow);
+  color: var(--ktm-btn-color);
+}
+
+[data-button-style] .ktm-button:hover {
+  background: var(--ktm-btn-hover-bg);
+  color: var(--ktm-btn-hover-color);
+  border-color: var(--ktm-btn-hover-border);
 }
 
 .ktm-button-icon {
@@ -79,37 +271,854 @@
   height: var(--icon-s);
 }
 
+/* "Neue Aufgabe" weicht in Ghost vom Grundform-Button ab: Textaktion ohne
+   Fläche, mit einem wachsenden Strich unter Icon und Text bei Hover (006,
+   Ergänzung 2026-10-25 "Buttonstil", DESIGN.md §Buttonstil "Neue Aufgabe"). */
+[data-button-style='ghost'] .ktm-new-task {
+  position: relative;
+  height: 28px;
+  padding: 0 var(--size-4-2);
+  background: transparent;
+  color: var(--text-accent);
+  font-weight: var(--font-semibold);
+}
+
+[data-button-style='ghost'] .ktm-new-task:hover {
+  background: transparent;
+  color: var(--text-accent);
+}
+
+[data-button-style='ghost'] .ktm-new-task::after {
+  content: '';
+  position: absolute;
+  left: var(--size-4-2);
+  right: var(--size-4-2);
+  bottom: 0;
+  height: 2px;
+  background: var(--interactive-accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 180ms ease;
+}
+
+[data-button-style='ghost'] .ktm-new-task:hover::after {
+  transform: scaleX(1);
+}
+
+[data-button-style='keycap'] .ktm-new-task .ktm-button-icon {
+  color: var(--text-muted);
+}
+
 .ktm-level-segment {
   display: inline-flex;
+  align-items: center;
   gap: var(--size-2-1);
 }
 
 .ktm-level-button {
-  height: var(--input-height);
+  position: relative;
   padding: 0 var(--size-4-2);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+[data-button-style] .ktm-level-button {
+  height: var(--ktm-btn-height);
   border: none;
-  border-radius: var(--radius-s);
   box-shadow: none;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+[data-button-style='basic'] .ktm-level-button {
+  border-radius: 4px;
+}
+
+[data-button-style='basic'] .ktm-level-button:hover {
+  color: var(--text-normal);
+}
+
+[data-button-style='basic'] .ktm-level-button[data-active='true'] {
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+}
+
+[data-button-style='ghost'] .ktm-level-segment {
+  gap: 2px;
+}
+
+[data-button-style='ghost'] .ktm-level-button {
+  border-radius: 6px 6px 0 0;
+  color: var(--text-faint);
+}
+
+[data-button-style='ghost'] .ktm-level-button:hover {
+  color: var(--text-normal);
+}
+
+[data-button-style='ghost'] .ktm-level-button[data-active='true'] {
+  color: var(--text-normal);
+  box-shadow: inset 0 -2px 0 var(--interactive-accent);
+}
+
+[data-button-style='outline'] .ktm-level-segment {
+  gap: 2px;
+  padding: 2px;
+  border: var(--ktm-btn-border);
+  border-radius: var(--ktm-btn-radius);
+}
+
+[data-button-style='outline'] .ktm-level-button {
+  height: 24px;
+  border-radius: 6px;
+}
+
+[data-button-style='outline'] .ktm-level-button[data-active='true'] {
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+}
+
+[data-button-style='keycap'] .ktm-level-segment {
+  gap: 4px;
+}
+
+[data-button-style='keycap'] .ktm-level-button {
+  border-radius: var(--ktm-btn-radius);
+  background: var(--ktm-btn-bg);
+  box-shadow: var(--ktm-btn-shadow);
+  transition:
+    transform 80ms ease,
+    box-shadow 80ms ease,
+    background 80ms ease;
+}
+
+[data-button-style='keycap'] .ktm-level-button:hover {
+  background: var(--ktm-btn-hover-bg);
+}
+
+[data-button-style='keycap'] .ktm-level-button[data-active='true'] {
+  transform: translateY(2px);
+  background: var(--background-primary-alt);
+  box-shadow: inset 0 1px 3px var(--background-modifier-box-shadow);
+  color: var(--text-normal);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-button-style='ghost'] .ktm-new-task::after,
+  [data-button-style='keycap'] .ktm-level-button {
+    transition: none;
+  }
+}
+
+[data-button-style] .ktm-view-select {
+  height: var(--ktm-btn-height);
+  border-radius: var(--ktm-btn-radius);
+  background: var(--ktm-btn-bg);
+  border: var(--ktm-btn-border);
+  box-shadow: var(--ktm-btn-shadow);
+  color: var(--ktm-btn-color);
+}
+
+[data-button-style='ghost'] .ktm-view-select {
+  color: var(--text-normal);
+}
+
+/* Nativer Pfeil des Ansicht-Menüs ist in jedem Stil aus; Spezifität wie
+   .ktm-value-select select.dropdown (Wissen Eintrag 533). Nur in Ghost zeigt
+   .ktm-viewmenu-chevron den eigenen Pfeil (006, Ergänzung 2026-10-27 "Pfeil
+   am Ansicht-Menü nur im Stil Ghost"). */
+select.ktm-view-select.dropdown {
+  appearance: none;
+  background-image: none;
+}
+
+.ktm-viewmenu-chevron {
+  display: none;
+}
+
+[data-button-style='ghost'] select.ktm-view-select {
+  /* 4 px Abstand + 12 px Icon (Vertragswerte, wie .ktm-filter-chevron). */
+  padding-right: 16px;
+  field-sizing: content;
+}
+
+[data-button-style='ghost'] .ktm-view-wrap > .ktm-viewmenu-chevron {
+  display: inline-flex;
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-normal);
+}
+
+[data-button-style='ghost'] .ktm-view-wrap > .ktm-viewmenu-chevron svg {
+  width: 12px;
+  height: 12px;
+}
+
+[data-button-style='ghost'] .ktm-view-select.ktm-buttonstyle-preview-view {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+[data-button-style='ghost'] .ktm-buttonstyle-preview-view .ktm-viewmenu-chevron {
+  display: inline-flex;
+  color: var(--text-normal);
+}
+
+[data-button-style='ghost'] .ktm-buttonstyle-preview-view .ktm-viewmenu-chevron svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Größensteuerung "− n % +" (001, Ergänzung 2026-10-24 "Eigene Größe des
+   Boards"; DESIGN.md "Größensteuerung .ktm-scale"). Buttons wie .ktm-button:
+   gleiche Höhe, Fläche und Radius, damit sie wie die übrigen Schaltflächen der
+   Kopfzeile aussehen. */
+.ktm-scale {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-1);
+}
+
+[data-button-style='outline'] .ktm-scale {
+  border: var(--ktm-btn-border);
+  border-radius: var(--ktm-btn-radius);
+}
+
+.ktm-scale-down,
+.ktm-scale-up,
+.ktm-scale-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--size-4-2);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+[data-button-style] .ktm-scale-down,
+[data-button-style] .ktm-scale-up,
+[data-button-style] .ktm-scale-value {
+  height: var(--ktm-btn-height);
+  border: none;
+  border-radius: var(--ktm-btn-radius);
+  background: var(--ktm-btn-bg);
+  box-shadow: var(--ktm-btn-shadow);
+  color: var(--ktm-btn-color);
+}
+
+[data-button-style] .ktm-scale-down:hover,
+[data-button-style] .ktm-scale-up:hover,
+[data-button-style] .ktm-scale-value:hover {
+  background: var(--ktm-btn-hover-bg);
+}
+
+[data-button-style='ghost'] .ktm-scale-down,
+[data-button-style='ghost'] .ktm-scale-up {
+  color: var(--text-faint);
+}
+
+[data-button-style='outline'] .ktm-scale-down,
+[data-button-style='outline'] .ktm-scale-up,
+[data-button-style='outline'] .ktm-scale-value {
+  background: transparent;
+  border-radius: 0;
+}
+
+[data-button-style='outline'] .ktm-scale-value {
+  border-left: 1px solid var(--background-modifier-border-hover);
+  border-right: 1px solid var(--background-modifier-border-hover);
+}
+
+.ktm-scale-down svg,
+.ktm-scale-up svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-scale-value {
+  /* Feste Mindestbreite, damit die Kopfzeile beim Wechsel 90 ↔ 100 % nicht
+     springt. */
+  min-width: var(--size-4-12);
+}
+
+/* Marke der Hervorhebung (001, Ergänzung 2026-10-18 "Hervorheben"; DESIGN.md
+   Komponenten "Marke der Hervorhebung"). Steht vor dem Filterfeld. */
+.ktm-spotlight-mark {
+  box-sizing: border-box;
+  flex: none;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: 0 var(--size-4-2);
+  border: 1px dashed var(--interactive-accent);
+  border-radius: 12px;
+  color: var(--text-accent);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-spotlight-mark-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.ktm-spotlight-mark-icon svg,
+.ktm-spotlight-mark-clear svg {
+  width: 12px;
+  height: 12px;
+}
+
+.ktm-spotlight-mark-title {
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ktm-spotlight-mark-clear {
+  display: inline-flex;
+  flex: none;
+  cursor: pointer;
+}
+
+/* Filterfeld und Filter-Popover (001, Ergänzung 2026-10-18; DESIGN.md
+   Komponenten "Filterfeld"/"Filter-Popover"). */
+.ktm-filter-wrap {
+  position: relative;
+}
+
+.ktm-filter {
+  box-sizing: border-box;
+  max-width: 360px;
+  height: var(--input-height);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 10px;
+  border-radius: var(--radius-s);
+  background: transparent;
   color: var(--text-muted);
   font-size: var(--font-ui-small);
   cursor: pointer;
 }
 
-.ktm-level-button:hover {
+.ktm-filter:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-filter[data-set='true'] {
+  background: var(--tag-background);
+  color: var(--text-accent);
+}
+
+.ktm-filter[data-set='true']:hover {
+  background: var(--tag-background);
+}
+
+/* Buttonstil Outline/Keycap (006, Ergänzung 2026-10-25): Fläche und Text des
+   Filterfelds bleiben in allen Stilen gleich (F129 K21), nur der Rand kommt
+   hinzu. */
+[data-button-style='outline'] .ktm-filter {
+  border: 1px dashed var(--background-modifier-border-hover);
+}
+
+[data-button-style='outline'] .ktm-filter[data-set='true'] {
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 55%, transparent);
+}
+
+[data-button-style='keycap'] .ktm-filter {
+  border: 1px solid var(--background-modifier-border-hover);
+}
+
+[data-button-style='keycap'] .ktm-filter[data-set='true'] {
+  box-shadow: 0 2px 0 color-mix(in srgb, var(--interactive-accent) 35%, transparent);
+}
+
+.ktm-filter-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.ktm-filter-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ktm-filter-text {
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ktm-filter-chevron,
+.ktm-filter-clear {
+  display: inline-flex;
+  flex: none;
+}
+
+.ktm-filter-chevron svg,
+.ktm-filter-clear svg {
+  width: 12px;
+  height: 12px;
+}
+
+.ktm-filter-badge {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: var(--font-ui-smaller);
+  line-height: 16px;
+}
+
+.ktm-filtermenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-s);
+  /* Scrollt als Ganzes ab Fensterhöhe minus 80 px (001, Ergänzung
+     2026-10-25, "Platz"); die Sektionen selbst scrollen nicht mehr einzeln. */
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+}
+
+.ktm-filtermenu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-filtermenu-clearall {
+  color: var(--text-accent);
+  cursor: pointer;
+}
+
+.ktm-filtermenu-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.ktm-filtermenu-group {
+  padding: 4px 4px 0;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-filtermenu-separator {
+  flex: none;
+  height: 1px;
+  margin: 4px 0;
+  background: var(--background-modifier-border);
+}
+
+.ktm-filtermenu-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ktm-filtermenu-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-filtermenu-row[data-selected='true'] {
+  background: var(--tag-background);
+  color: var(--text-accent);
+}
+
+.ktm-filtermenu-row[data-selected='partial'] {
+  border-color: var(--interactive-accent);
+  color: var(--text-accent);
+}
+
+.ktm-filtermenu-row[data-closed='true'] {
+  color: var(--text-faint);
+}
+
+.ktm-filtermenu-row-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-faint);
+}
+
+.ktm-filtermenu-row-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ktm-filtermenu-row[data-selected='true'] .ktm-filtermenu-row-icon,
+.ktm-filtermenu-row[data-selected='partial'] .ktm-filtermenu-row-icon {
+  color: var(--text-accent);
+}
+
+.ktm-filtermenu-row-title {
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ktm-filtermenu-row-right {
+  flex: none;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-filtermenu-row[data-selected='true'] .ktm-filtermenu-row-right,
+.ktm-filtermenu-row[data-selected='partial'] .ktm-filtermenu-row-right {
+  color: var(--text-accent);
+}
+
+/* Drei Sektionen (001, Ergänzung 2026-10-25, "Drei Sektionen"; DESIGN.md
+   Filter-Popover): Hierarchie, Status, Tags, je mit Überschrift und bei
+   Auswahl einer Zahl als Marke. */
+.ktm-filtermenu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ktm-filtermenu-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+}
+
+.ktm-filtermenu-section-count {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--tag-background);
+  color: var(--text-accent);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 16px;
+}
+
+/* Status wirkt auf dem Board nicht (001, Ergänzung 2026-10-25, S51). */
+.ktm-filtermenu-section[data-inactive='true'] {
+  opacity: 0.4;
+}
+
+.ktm-filtermenu-section-hint {
+  font-size: var(--font-ui-smaller);
+  font-style: italic;
+  color: var(--text-faint);
+}
+
+.ktm-filtermenu-expand {
+  color: var(--text-accent);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.ktm-filtermenu-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ktm-filterchip {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 11px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ktm-filterchip[data-selected='true'] {
+  border-color: transparent;
+  background: var(--tag-background);
+  color: var(--text-accent);
+}
+
+.ktm-filterchip-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.ktm-filterchip-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.ktm-filterchip-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.ktm-filtermenu-save {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px;
+  color: var(--text-accent);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+.ktm-filtermenu-save svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Ansicht-Menü (001, Ergänzung 2026-10-18 "Ansicht-Menü"; DESIGN.md
+   Komponenten "Ansicht-Menü"): Popover wie .ktm-filtermenu, 260 px breit. */
+.ktm-view-wrap {
+  position: relative;
+}
+
+.ktm-viewmenu,
+.ktm-changedmenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--size-4-2);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-s);
+}
+
+/* The view menu is the second-to-last control in the header; anchored left it
+   would overflow the board at 1830 px. */
+.ktm-viewmenu {
+  left: auto;
+  right: 0;
+}
+
+.ktm-viewmenu-row {
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px;
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ktm-viewmenu-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-viewmenu-row[data-selected='true'] {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.ktm-viewmenu-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ktm-viewmenu-separator {
+  flex: none;
+  height: 1px;
+  margin: 4px 0;
+  background: var(--background-modifier-border);
+}
+
+.ktm-viewmenu-grip {
+  display: none;
+  flex: none;
+  color: var(--text-faint);
+  cursor: grab;
+}
+
+.ktm-viewmenu-row[data-saved='true']:hover .ktm-viewmenu-grip {
+  display: inline-flex;
+}
+
+.ktm-viewmenu-rename,
+.ktm-viewmenu-delete {
+  display: none;
+  flex: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-viewmenu-rename:hover,
+.ktm-viewmenu-delete:hover {
   color: var(--text-normal);
 }
 
-.ktm-level-button[data-active='false'] {
-  background: transparent;
+.ktm-viewmenu-row[data-saved='true']:hover .ktm-viewmenu-rename,
+.ktm-viewmenu-row[data-saved='true']:hover .ktm-viewmenu-delete {
+  display: inline-flex;
 }
 
-.ktm-level-button[data-active='true'] {
-  background: var(--interactive-normal);
+.ktm-viewmenu-grip svg,
+.ktm-viewmenu-rename svg,
+.ktm-viewmenu-delete svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ktm-viewmenu-rename-input {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 4px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border-focus);
+  border-radius: var(--radius-s);
   color: var(--text-normal);
+  font-size: var(--font-ui-small);
 }
 
-.ktm-view-select {
-  height: var(--input-height);
+/* Darstellung, die eine Zeile mitbringt (012, Ergänzung 2026-10-25
+   "Ansicht-Menü, Darstellungen"): rechts Icon und Name, weicht bei einer
+   gespeicherten Ansicht dem Stift/Kreuz beim Hover. */
+.ktm-viewmenu-mode {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-viewmenu-mode svg {
+  width: 12px;
+  height: 12px;
+}
+
+.ktm-viewmenu-row[data-saved='true']:hover .ktm-viewmenu-mode {
+  display: none;
+}
+
+/* Aktionszeilen am Ende des Ansicht-Menüs und im Menü der Marke "geändert"
+   (012, Ergänzung 2026-10-25 "Marke 'geändert'"): gleiche Zeilenhöhe wie
+   .ktm-viewmenu-row, Text und Icon in --text-accent. */
+.ktm-viewmenu-action {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px;
+  border-radius: var(--radius-s);
+  color: var(--text-accent);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+.ktm-viewmenu-action:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-viewmenu-action-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.ktm-viewmenu-action-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ktm-viewmenu-action-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Marke "geändert" (012, Ergänzung 2026-10-25 "Marke 'geändert'"; DESIGN.md
+   Komponente "Marke 'geändert'"): vor dem Ansicht-Menü, solange die
+   Darstellung von der gemerkten/gespeicherten abweicht. */
+.ktm-changed-wrap {
+  position: relative;
+}
+
+.ktm-changed {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  height: 24px;
+  padding: 0 6px 0 8px;
+  background: var(--tag-background);
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 50%, transparent);
+  border-radius: 12px;
+  color: var(--text-accent);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ktm-changed-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--interactive-accent);
+}
+
+.ktm-changed-chevron {
+  display: inline-flex;
+  flex: none;
+}
+
+.ktm-changed-chevron svg {
+  width: 12px;
+  height: 12px;
 }
 
 .ktm-today[data-collapsed] {
@@ -167,12 +1176,54 @@
   color: var(--ktm-signal-overdue);
 }
 
+.ktm-today-count[data-signal='due'] {
+  color: var(--ktm-signal-today);
+}
+
 .ktm-today-count[data-signal='planned'] {
   color: var(--ktm-signal-today);
 }
 
 .ktm-today-spacer {
   flex: 1;
+}
+
+.ktm-today-follow {
+  display: inline-flex;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-today-follow:hover {
+  color: var(--text-normal);
+}
+
+.ktm-today-follow svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.ktm-today-follow[data-on='true'] {
+  color: var(--text-accent);
+}
+
+/* Buttonstil (006, Ergänzung 2026-10-25): die Fläche/der Rand des
+   eingeschalteten Zustands folgt dem gewählten Stil, Basic bleibt ohne. */
+[data-button-style='ghost'] .ktm-today-follow[data-on='true'] {
+  background: var(--tag-background);
+  border-radius: 6px;
+}
+
+[data-button-style='outline'] .ktm-today-follow[data-on='true'] {
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 55%, transparent);
+  border-radius: 6px;
+}
+
+[data-button-style='keycap'] .ktm-today-follow[data-on='true'] {
+  transform: translateY(2px);
+  background: var(--background-primary-alt);
+  border-radius: 6px;
+  box-shadow: inset 0 1px 3px var(--background-modifier-box-shadow);
 }
 
 .ktm-today-date {
@@ -484,6 +1535,18 @@
   color: var(--text-muted);
 }
 
+.ktm-card-chip.is-icon {
+  width: var(--ktm-chip-height);
+  padding: 0;
+  justify-content: center;
+  border-radius: var(--radius-s);
+}
+
+.ktm-card-chip.is-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
 .ktm-card-parent {
   background: none;
   border: 1px solid var(--background-modifier-border);
@@ -503,8 +1566,22 @@
   text-overflow: ellipsis;
 }
 
+/* Hervorheben per Ebenen-Chip (001, Ergänzung 2026-10-18): nur Chips mit
+   einer Element-ID (Board-Karten, nicht die Einstellungen-Vorschau) sind
+   klickbar. */
+.ktm-card-parent[data-ancestor-id] {
+  cursor: pointer;
+}
+
 .ktm-card[data-done='true'] .ktm-card-title {
   color: var(--text-muted);
+}
+
+/* Gedimmte Karte bei aktiver Hervorhebung (DESIGN.md Zustand "Hervorhebung
+   aktiv"); nur auf dem Board, nicht im Bereich Heute (001, Ergänzung
+   2026-10-18, "Nicht betroffen ist der Bereich Heute"). */
+.ktm-columns .ktm-card[data-spotlight='dim'] {
+  opacity: 0.3;
 }
 
 .ktm-card:focus {
@@ -639,8 +1716,14 @@
   border-radius: var(--radius-s);
   color: var(--text-normal);
   font-family: var(--font-interface);
-  font-size: var(--font-ui-medium);
   font-weight: var(--font-semibold);
+}
+
+/* Obsidian's own input[type="text"] rule outranks a bare class selector on
+   specificity (0,1,1 vs 0,1,0) for font-size; repeating the ancestor class
+   wins it back, same technique as the :placeholder-shown rule below. */
+.ktm-expanded-title .ktm-title-field {
+  font-size: var(--font-ui-medium);
 }
 
 /* The draft's still-empty title (DESIGN.md draft): no edit-surface box
@@ -725,6 +1808,30 @@
   background-image: none;
 }
 
+/* Dropdowns der Karte folgen dem Buttonstil (006, Ergänzung 2026-10-25,
+   DESIGN.md §Buttonstil "Dropdowns der Karte"): eigene Höhe
+   (--ktm-card-height), sonst dieselben Variablen wie die Grundform. */
+[data-button-style] .ktm-value-select select.dropdown,
+[data-button-style] .ktm-priority-value {
+  height: var(--ktm-card-height);
+  border-radius: var(--ktm-btn-radius);
+  background: var(--ktm-btn-bg);
+  border: var(--ktm-btn-border);
+  box-shadow: var(--ktm-btn-shadow);
+  color: var(--ktm-btn-color);
+}
+
+.ktm-priority-value {
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+[data-button-style='ghost'] .ktm-value-select select.dropdown,
+[data-button-style='ghost'] .ktm-priority-value {
+  margin-left: -8px;
+  color: var(--text-normal);
+}
+
 .ktm-value-select .ktm-select-chevron {
   position: absolute;
   right: var(--size-4-1);
@@ -771,10 +1878,22 @@
 }
 
 .ktm-folder-value {
+  display: flex;
   position: relative;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--ktm-ticket-gap);
   min-width: 0;
+  overflow: hidden;
+  margin: calc(-1 * var(--size-4-1));
+  padding: var(--size-4-1);
   border-radius: var(--radius-s);
   cursor: pointer;
+}
+
+.ktm-folder-icon {
+  flex: none;
+  color: var(--text-muted);
 }
 
 .ktm-folder-value:hover,
@@ -792,6 +1911,8 @@
 }
 
 .ktm-folder-path {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   color: var(--text-normal);
   font-family: ui-monospace, Consolas, monospace;
@@ -802,6 +1923,7 @@
 
 .ktm-badge {
   display: inline-flex;
+  flex: none;
   align-items: center;
   height: var(--size-4-4);
   margin-left: var(--size-4-2);
@@ -851,6 +1973,24 @@
   color: var(--text-faint);
 }
 
+[data-button-style='ghost'] .ktm-chip-ghost {
+  border: none;
+  border-radius: 6px;
+}
+
+[data-button-style='ghost'] .ktm-chip-ghost:hover {
+  background: var(--background-modifier-hover);
+}
+
+[data-button-style='outline'] .ktm-chip-ghost {
+  border: 1px dashed var(--background-modifier-border-focus);
+  border-radius: 6px;
+}
+
+[data-button-style='keycap'] .ktm-chip-ghost {
+  border-radius: 6px;
+}
+
 .ktm-chip-remove {
   display: inline-flex;
   color: var(--text-faint);
@@ -874,13 +2014,22 @@
   font-size: var(--font-ui-smaller);
 }
 
+/* Obsidian's own input[type="text"] rule outranks a bare class selector on
+   specificity (0,1,1 vs 0,1,0) for height, same as .ktm-date-field above;
+   repeating the ancestor class wins it back to the DESIGN.md 26 px. */
+.ktm-detail-tags .ktm-tag-input {
+  height: 26px;
+}
+
 .ktm-tag-suggestions {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
   z-index: 2;
   box-sizing: border-box;
-  min-width: 160px;
+  width: 260px;
+  max-height: 208px;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   padding: var(--size-4-2);
@@ -888,6 +2037,27 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   box-shadow: var(--shadow-s);
+}
+
+.ktm-tag-sep {
+  flex: none;
+  height: 1px;
+  margin: 4px 0;
+  background: var(--background-modifier-border);
+}
+
+.ktm-tag-suggestions .ktm-tag-sugg-noicon svg {
+  color: var(--text-faint);
+}
+
+.ktm-tag-chip-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.ktm-tag-chip-icon svg {
+  width: 12px;
+  height: 12px;
 }
 
 .ktm-expanded-body {
@@ -1030,6 +2200,15 @@
 .ktm-linkmenu-list {
   display: flex;
   flex-direction: column;
+  max-height: 208px;
+  overflow-y: auto;
+}
+
+.ktm-linkmenu-sep {
+  flex: none;
+  height: 1px;
+  margin: 4px 0;
+  background: var(--background-modifier-border);
 }
 
 .ktm-linkmenu-item {
@@ -1054,6 +2233,14 @@
 
 .ktm-linkmenu-item[data-hover='true'] {
   background: var(--background-modifier-hover);
+}
+
+.ktm-linkmenu-item[data-closed='true'] {
+  color: var(--text-faint);
+}
+
+.ktm-linkmenu-item[data-closed='true'] svg {
+  color: var(--text-faint);
 }
 
 .ktm-linkmenu-folder {
@@ -1122,11 +2309,27 @@
 }
 
 .ktm-description {
+  font-size: var(--font-ui-small);
   line-height: 1.5;
 }
 
+/* Same padding and a 1px transparent border as the edit field below, so the
+   text's top edge sits at the same place rendered and in edit (DESIGN.md
+   "Bearbeitbares Feld"); the border stays invisible here, it only exists to
+   match the edit field's box size. */
+.ktm-description-rendered {
+  padding: var(--size-4-2);
+  border: 1px solid transparent;
+}
+
 .ktm-description-rendered p {
-  margin: 0 0 var(--size-4-2);
+  margin: 0;
+}
+
+/* One blank line in the source is exactly one line height (002 S63,
+   core/markup.ts#expandBlankLines inserts one of these per blank line). */
+.ktm-blank-line {
+  height: calc(1.5 * var(--font-ui-small));
 }
 
 .ktm-description-rendered li:has(> input:checked) {
@@ -1155,11 +2358,12 @@
 }
 
 .ktm-description-edit {
+  display: block;
   width: 100%;
-  min-height: 160px;
   padding: var(--size-4-2);
-  resize: vertical;
-  border: 1px solid var(--background-modifier-border);
+  overflow: hidden;
+  resize: none;
+  border: 1px solid var(--background-modifier-border-focus);
   border-radius: var(--radius-s);
   background: var(--background-primary);
   color: var(--text-normal);
@@ -1186,9 +2390,28 @@
   color: var(--ktm-signal-overdue);
 }
 
+.ktm-date-value[data-field='started'] {
+  color: var(--text-muted);
+}
+
 .ktm-date-value[data-due='today'],
 .ktm-date-value[data-planned='today'] {
   color: var(--ktm-signal-today);
+}
+
+.ktm-date-clear {
+  display: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-date-clear svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.ktm-date-value:hover .ktm-date-clear {
+  display: inline-flex;
 }
 
 .ktm-anchor {
@@ -1210,11 +2433,16 @@
   font-size: var(--font-ui-small);
 }
 
+/* Obsidian's own input[type="text"] rule outranks a bare class selector on
+   specificity (0,1,1 vs 0,1,0) for height, same as .ktm-title-field above;
+   repeating the ancestor class wins it back to the DESIGN.md 26 px. */
+.ktm-side .ktm-date-field {
+  height: 26px;
+}
+
 .ktm-calendar {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 2;
+  position: fixed;
+  z-index: var(--layer-popover);
   box-sizing: border-box;
   width: 248px;
   padding: var(--size-4-2);
@@ -1338,11 +2566,26 @@
   height: var(--icon-xs);
 }
 
+/* "Als Result markieren" (002, Ergänzung 2026-10-19 "Result"): vorgerendert,
+   nur bei Hover sichtbar, wie .ktm-link-remove. */
+.ktm-link-mark-result {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-faint);
+  visibility: hidden;
+}
+
+.ktm-link-mark-result svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
 .ktm-link[data-hover='true'] {
   background: var(--background-modifier-hover);
 }
 
-.ktm-link[data-hover='true'] .ktm-link-remove {
+.ktm-link[data-hover='true'] .ktm-link-remove,
+.ktm-link[data-hover='true'] .ktm-link-mark-result {
   visibility: visible;
 }
 
@@ -1350,6 +2593,33 @@
   flex: none;
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
+}
+
+.ktm-done-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ktm-ticket-gap);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+  margin: -2px -4px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.ktm-done-group:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-done-group-chevron {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-faint);
+}
+
+.ktm-done-group-chevron svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1471,6 +2741,17 @@
   cursor: pointer;
 }
 
+.ktm-orderrow .ico.is-btn.is-empty {
+  border-style: dashed;
+  color: var(--text-faint);
+}
+
+/* 006, Ergänzung 2026-10-25 "Tags mit Icon": the general tags shown ahead of
+   a project's own, locked and not bedienbar (K6). */
+.ktm-orderrow[data-tag-scope='general'] {
+  opacity: 0.55;
+}
+
 .ktm-orderrow .nm {
   flex: 1;
   overflow: hidden;
@@ -1506,8 +2787,9 @@
   height: 26px;
 }
 
+/* Höhe folgt seit F191 wieder der Grundform (.ktm-button.ktm-button, 30px);
+   nur der Innenrand bleibt für die 34px hohe Zeile verengt. */
 .ktm-orderrow .ktm-button {
-  height: 24px;
   padding: 0 var(--size-4-2);
 }
 
@@ -1516,7 +2798,8 @@
 }
 
 .ktm-addrow {
-  display: inline-flex;
+  display: flex;
+  width: fit-content;
   align-items: center;
   gap: 6px;
   height: 28px;
@@ -1549,6 +2832,35 @@
 
 .ktm-preview .ktm-card {
   width: 280px;
+}
+
+/* Einstellung "Buttonstil" mit Vorschau (006, Ergänzung 2026-10-25;
+   DESIGN.md §Komponenten "Einstellung „Buttonstil“ mit Vorschau"): Der
+   Container trägt `data-button-style` wie `.ktm-board`, dieselben Regeln
+   oben wirken also unverändert auf die wiederverwendeten Klassen darin
+   (SettingsTab#renderButtonStylePreview). Die Kopfzeile selbst ist zusätzlich
+   eine eigene Fläche mit Rand (K15). */
+.ktm-buttonstyle-preview {
+  margin-top: var(--size-4-3);
+}
+
+.ktm-buttonstyle-preview-header {
+  box-sizing: border-box;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-4-2);
+  padding: 0 var(--size-4-3);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+}
+
+.ktm-buttonstyle-preview-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
 }
 
 .ktm-textinput {
@@ -1592,4 +2904,1717 @@ input.ktm-textinput.is-num::-webkit-outer-spin-button,
 input.ktm-textinput.is-num::-webkit-inner-spin-button {
   appearance: none;
   margin: 0;
+}
+
+/* Result-Zeile auf der Einstellungsseite (DESIGN.md "Reihenfolge-Liste",
+   002 Ergänzung 2026-10-19 "Result"): Griff + Icon + Name wie die
+   Verknüpfungsart-Zeilen, der Schlüssel nur zur Anzeige. */
+.ktm-result-icon {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.ktm-result-icon svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.ktm-result-name {
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-result-key {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+}
+
+/* Result-Dialog (DESIGN.md "Result-Dialog", 002 Ergänzung 2026-10-19
+   "Result"): Obsidian-Modal, 460 px, Einfachauswahl-Zeilen für Vorfahren und
+   Suchtreffer, Suchfeld wie im Verknüpfungsmenü (.ktm-search), Zielzeile. */
+.modal.ktm-resultdialog {
+  width: 460px;
+}
+
+.ktm-resultdialog-sentence {
+  margin: 0 0 var(--size-4-2);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-resultdialog-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.ktm-resultdialog-sep {
+  height: 0;
+  margin: 0;
+  background: var(--background-modifier-border);
+}
+
+.ktm-resultdialog-sep.is-visible {
+  height: 1px;
+  margin: var(--size-4-1) 0;
+}
+
+.ktm-resultdialog-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 4px;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.ktm-resultdialog-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-resultdialog-radio {
+  flex: none;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 50%;
+  color: var(--text-on-accent);
+}
+
+.ktm-resultdialog-radio svg {
+  width: 10px;
+  height: 10px;
+}
+
+.ktm-resultdialog-row[data-selected='true'] .ktm-resultdialog-radio {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+}
+
+.ktm-resultdialog-level {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.ktm-resultdialog-level svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ktm-resultdialog-levelname {
+  flex: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-resultdialog-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-resultdialog-project {
+  flex: none;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-resultdialog .ktm-search {
+  margin: var(--size-4-2) 0;
+}
+
+.ktm-resultdialog-target {
+  box-sizing: border-box;
+  padding: var(--size-4-1) var(--size-4-2);
+  background: var(--background-primary-alt);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: var(--font-ui-smaller);
+}
+
+/* Woche (012 "Woche", DESIGN.md §Darstellungen): Unterkopf 34 px mit Pfeilen,
+   Datumsknopf und "Heute", darunter die Tagesspalten. */
+.ktm-subheader {
+  box-sizing: border-box;
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: 0 var(--size-4-3) var(--size-4-2);
+}
+
+.ktm-week-prev,
+.ktm-week-next {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-week-prev:hover,
+.ktm-week-next:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.ktm-week-prev svg,
+.ktm-week-next svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-week-date-wrap {
+  position: relative;
+}
+
+.ktm-week-date {
+  box-sizing: border-box;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: 0 var(--size-4-2);
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.ktm-week-date:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-week-date-icon svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+  color: var(--text-faint);
+}
+
+.ktm-week-date-kw {
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.ktm-week-date-range {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.ktm-week-date-chevron svg {
+  width: 12px;
+  height: 12px;
+  color: var(--text-faint);
+}
+
+.ktm-week-today {
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--size-4-3);
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+.ktm-week-today:not([disabled]):hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-week-today[disabled] {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.ktm-week {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: var(--size-4-3);
+  padding: 0 var(--size-4-3) var(--size-4-3);
+  overflow-x: auto;
+}
+
+.ktm-week-day {
+  box-sizing: border-box;
+  flex: 1 1 var(--ktm-week-day-min);
+  min-width: var(--ktm-week-day-min);
+}
+
+.ktm-week-day[data-weekend='true'] {
+  flex: 1 1 var(--ktm-week-weekend-min);
+  min-width: var(--ktm-week-weekend-min);
+}
+
+.ktm-week-day[data-day='none'] {
+  flex: 0 0 var(--ktm-week-nodate);
+  min-width: var(--ktm-week-nodate);
+}
+
+.ktm-week-day[data-today='true'] {
+  border-top: 2px solid var(--interactive-accent);
+}
+
+.ktm-week-day[data-today='true'] .ktm-column-title {
+  color: var(--text-accent);
+}
+
+.ktm-week-day[data-past='true'] .ktm-column-title {
+  color: var(--text-muted);
+}
+
+/* Statusmarke (012 "Statusmarke"): Punkt plus Spaltenname auf Karten in
+   Woche, Agenda und Matrix. */
+.ktm-status {
+  box-sizing: border-box;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  height: 18px;
+  padding: 0 var(--ktm-chip-padding-x);
+  border-radius: 2em;
+  background: var(--interactive-normal);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.ktm-status-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.ktm-status[data-tone='ready'] .ktm-status-dot {
+  background: var(--color-cyan);
+}
+
+.ktm-status[data-tone='active'] .ktm-status-dot {
+  background: var(--interactive-accent);
+}
+
+.ktm-status[data-tone='done'] .ktm-status-dot {
+  background: var(--color-green);
+}
+
+/* Wochenkalender (012 "Wochenkalender", DESIGN.md Komponente gleichen
+   Namens): Popover unter dem Datumsknopf, wie der Kalender des Datumsfelds. */
+.ktm-weekcal {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  width: 286px;
+  padding: var(--size-4-2);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-s);
+}
+
+.ktm-weekcal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--size-4-2);
+}
+
+.ktm-weekcal-nav {
+  display: inline-flex;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-weekcal-nav svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-weekcal-title {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+}
+
+.ktm-weekcal-headrow,
+.ktm-weekcal-row {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  text-align: center;
+}
+
+.ktm-weekcal-headrow {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-weekcal-row {
+  height: 28px;
+  align-items: center;
+  border-radius: 4px;
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.ktm-weekcal-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-weekcal-row .ktm-weekcal-week {
+  color: var(--text-faint);
+}
+
+.ktm-weekcal-row[data-current='true'] .ktm-weekcal-week {
+  color: var(--text-accent);
+}
+
+.ktm-weekcal-day[data-other-month='true'] {
+  color: var(--text-faint);
+}
+
+.ktm-weekcal-day[data-today='true'] {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+.ktm-weekcal-row[data-selected='true'] {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.ktm-weekcal-row[data-selected='true'] .ktm-weekcal-week,
+.ktm-weekcal-row[data-selected='true'] .ktm-weekcal-day {
+  color: var(--text-on-accent);
+}
+
+/* "Heute" bleibt auch in der gewählten Zeile an seiner eigenen Farbe
+   erkennbar (DESIGN.md Wochenkalender: "heute in --text-accent 600" gilt
+   unabhängig von der Auswahl). */
+.ktm-weekcal-row[data-selected='true'] .ktm-weekcal-day[data-today='true'] {
+  color: var(--text-accent);
+}
+
+.ktm-weekcal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--size-4-2);
+  padding-top: var(--size-4-2);
+  border-top: 1px solid var(--background-modifier-border);
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-weekcal-foot-today {
+  color: var(--text-accent);
+  cursor: pointer;
+}
+
+/* Agenda (012 "Agenda", DESIGN.md Darstellungen "Agenda"): Kopfzeile und
+   Zeile teilen dasselbe Spaltenraster (--ktm-agenda-cols); @container regelt
+   die schmale Zweizeilenform, ganz ohne ResizeObserver. */
+.ktm-agenda-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  padding: 0 var(--size-4-3) var(--size-4-3);
+  overflow-y: auto;
+}
+
+.ktm-agenda {
+  container-type: inline-size;
+  container-name: ktm-agenda;
+  width: 100%;
+  max-width: var(--ktm-agenda-max);
+  display: flex;
+  flex-direction: column;
+}
+
+.ktm-agenda-head,
+.ktm-agenda-row {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: var(--ktm-agenda-cols);
+  grid-template-areas: 'title status planned due priority project ancestors tags';
+  column-gap: var(--size-4-3);
+  /* "start" statt "center": Statusmarke (feste Höhe 18px) und die
+     Geplant-/Fällig-Felder (Icon+Text, geringfügig niedriger) sollen an
+     derselben Oberkante beginnen, nicht nur im Mittel übereinstimmen (K7). */
+  align-items: start;
+}
+
+.ktm-agenda-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  /* flex:none statt nur height (Flex-Item in .ktm-agenda, flex-direction:
+     column): ohne das pinnt eine sticky-Kopfzeile ihre Flex-Basis nicht
+     zuverlässig auf 30px und schrumpft in manchen Layoutzuständen auf ihre
+     Inhaltshöhe. */
+  flex: none;
+  height: var(--ktm-agenda-head);
+  padding: 0 var(--size-4-3);
+  background: var(--ktm-surface-board);
+  border-bottom: 1px solid var(--ktm-card-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  align-items: center;
+}
+
+.ktm-agenda-cell[data-col='title'] {
+  grid-area: title;
+}
+
+.ktm-agenda-cell[data-col='status'] {
+  grid-area: status;
+}
+
+.ktm-agenda-cell[data-col='planned'] {
+  grid-area: planned;
+}
+
+.ktm-agenda-cell[data-col='due'] {
+  grid-area: due;
+}
+
+.ktm-agenda-cell[data-col='priority'] {
+  grid-area: priority;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ktm-agenda-cell[data-col='project'] {
+  grid-area: project;
+}
+
+.ktm-agenda-cell[data-col='ancestors'] {
+  grid-area: ancestors;
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+.ktm-agenda-cell[data-col='tags'] {
+  grid-area: tags;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+.ktm-agenda-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  color: var(--text-normal);
+}
+
+.ktm-agenda-group {
+  margin-top: var(--size-4-3);
+}
+
+.ktm-agenda-group-head {
+  box-sizing: border-box;
+  height: var(--ktm-agenda-head);
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: 0 var(--size-4-2);
+  cursor: pointer;
+}
+
+.ktm-agenda-group-chevron svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+  color: var(--text-faint);
+}
+
+.ktm-agenda-group-title {
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.ktm-agenda-group-title[data-group='overdue'] {
+  color: var(--color-red);
+}
+
+.ktm-agenda-group-title[data-group='today'] {
+  color: var(--text-accent);
+}
+
+.ktm-agenda-group-range {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-agenda-group-count {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.ktm-agenda-rows {
+  background: var(--ktm-surface-card);
+  border: 1px solid var(--ktm-card-border);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+}
+
+.ktm-agenda-row {
+  min-height: var(--ktm-agenda-row-min);
+  padding: 6px var(--size-4-3);
+  border-bottom: 1px solid var(--ktm-card-border);
+  cursor: pointer;
+}
+
+.ktm-agenda-rows .ktm-agenda-row:last-child {
+  border-bottom: none;
+}
+
+.ktm-agenda-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* Gedimmte Zeile unter Spotlight (DESIGN.md "Agenda"), dasselbe Maß wie die
+   Karte (Wissen reconcileCompleted-Vorbild .ktm-card[data-spotlight]). */
+.ktm-agenda-row[data-spotlight='dim'] {
+  opacity: 0.3;
+}
+
+/* Schmal (DESIGN.md "Agenda", 012 S16): Titel und Priorität oben, darunter
+   Status, Geplant, Fällig und der Rest für Projekt mit Epic › Feature; Tags
+   und die Kopfzeile (ihr Raster passt nicht mehr zur zweizeiligen Form)
+   entfallen. */
+@container ktm-agenda (max-width: 900px) {
+  .ktm-agenda-head {
+    display: none;
+  }
+
+  .ktm-agenda-row {
+    grid-template-columns: 100px 96px 96px 1fr 1fr 24px;
+    grid-template-areas:
+      'title title title title title priority'
+      'status planned due project ancestors priority';
+    row-gap: 5px;
+    column-gap: 5px;
+  }
+
+  .ktm-agenda-cell[data-col='title'] {
+    white-space: normal;
+  }
+
+  .ktm-agenda-cell[data-col='tags'] {
+    display: none;
+  }
+}
+
+/* Baum (012 "Baum", DESIGN.md Darstellungen "Baum"): Tabelle über die volle
+   Breite, Kopf und Zeilen teilen dasselbe Spaltenraster (--ktm-tree-cols). */
+.ktm-tree-host {
+  flex: 1;
+  min-height: 0;
+  padding: 0 var(--size-4-3) var(--size-4-3);
+  overflow-y: auto;
+}
+
+.ktm-tree {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.ktm-tree-head,
+.ktm-tree-row {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: var(--ktm-tree-cols);
+  grid-template-areas: 'title status started planned due progress';
+  column-gap: var(--size-4-3);
+  align-items: center;
+  height: var(--ktm-tree-row);
+  padding: 0 var(--size-4-2);
+  border-bottom: 1px solid var(--ktm-card-border);
+}
+
+.ktm-tree-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  flex: none;
+  background: var(--ktm-surface-board);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+}
+
+.ktm-tree-cell[data-col='title'] {
+  grid-area: title;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.ktm-tree-cell[data-col='status'] {
+  grid-area: status;
+}
+
+.ktm-tree-cell[data-col='started'] {
+  grid-area: started;
+}
+
+.ktm-tree-cell[data-col='planned'] {
+  grid-area: planned;
+}
+
+.ktm-tree-cell[data-col='due'] {
+  grid-area: due;
+}
+
+.ktm-tree-cell[data-col='progress'] {
+  grid-area: progress;
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+.ktm-tree-head [data-col] {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+.ktm-tree-head [data-col='title'] {
+  cursor: default;
+}
+
+.ktm-tree-head [data-col]:hover {
+  color: var(--text-normal);
+}
+
+/* 12 px laut DESIGN.md "Baum", eigenes Maß statt --icon-s/--icon-xs (16/14 px). */
+.ktm-tree-sort-icon svg {
+  width: 12px;
+  height: 12px;
+  color: var(--text-faint);
+}
+
+.ktm-tree-head [data-sort] .ktm-tree-sort-icon svg {
+  color: var(--text-accent);
+}
+
+.ktm-tree-sort-hint {
+  visibility: hidden;
+}
+
+.ktm-tree-head [data-col]:hover .ktm-tree-sort-hint {
+  visibility: visible;
+}
+
+.ktm-tree-rank {
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  color: var(--text-accent);
+}
+
+.ktm-tree-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  height: 20px;
+  padding: 0 var(--size-4-1);
+  margin-left: var(--size-4-2);
+  border-radius: 10px;
+  background: var(--tag-background);
+  color: var(--text-accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ktm-tree-reset-icon svg {
+  width: 11px;
+  height: 11px;
+}
+
+.ktm-tree-row {
+  cursor: pointer;
+}
+
+.ktm-tree-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-tree-row[data-kind='project'] {
+  background: var(--background-secondary);
+  cursor: default;
+}
+
+.ktm-tree-row[data-kind='project']:hover {
+  background: var(--background-secondary);
+}
+
+.ktm-tree-title {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  min-width: 0;
+}
+
+.ktm-tree-chevron svg,
+.ktm-tree-icon svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+  color: var(--text-faint);
+}
+
+.ktm-tree-chevron {
+  flex: none;
+  cursor: pointer;
+}
+
+.ktm-tree-chevron-spacer {
+  flex: none;
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-tree-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  color: var(--text-normal);
+}
+
+.ktm-tree-row[data-kind='project'] .ktm-tree-title-text {
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+}
+
+.ktm-tree-row[data-type='epic'] .ktm-tree-title-text {
+  font-weight: var(--font-semibold);
+}
+
+.ktm-tree-opentasks {
+  flex: none;
+  margin-left: var(--size-4-1);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: 400;
+}
+
+/* Kontextzeile (012 S22, "Baum"): Vorfahr eines Treffers, selbst kein
+   Treffer. */
+.ktm-tree-row[data-context='true'] .ktm-tree-title-text {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+/* Verworfen (012 "Für alle Darstellungen"): im Baum durchgestrichen statt
+   ausgeblendet. */
+.ktm-tree-row[data-discarded='true'] .ktm-tree-title-text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.ktm-tree-date {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+/* Abgeleitetes Gestartet (012 "Baum"): frühestes started der Nachfahren-Tasks. */
+.ktm-tree-cell[data-derived='true'] .ktm-tree-date {
+  font-style: italic;
+  color: var(--text-faint);
+}
+
+.ktm-tree-date[data-state='overdue'] {
+  color: var(--ktm-signal-overdue);
+}
+
+.ktm-tree-date[data-state='today'] {
+  color: var(--ktm-signal-today);
+}
+
+.ktm-tree-progress-bar {
+  flex: none;
+  width: var(--ktm-tree-progress-w);
+  height: var(--ktm-tree-progress-h);
+  border-radius: var(--ktm-tree-progress-h);
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.ktm-tree-progress-fill {
+  height: 100%;
+  background: color-mix(in srgb, var(--color-green) 75%, transparent);
+}
+
+.ktm-tree-progress-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+/* Roadmap (012 "Roadmap", DESIGN.md Darstellungen "Roadmap"): feste linke
+   Spalte, zweizeiliger sticky Kopf, Zeitachse mit Balken/Rahmen/Punkten.
+   Deckungen durchgehend über color-mix, keine rohen Farbliterale. */
+.ktm-road {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding: 0 0 var(--size-4-3);
+}
+
+.ktm-road-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex: none;
+  background: var(--ktm-surface-board);
+}
+
+.ktm-road-label {
+  box-sizing: border-box;
+  flex: 0 0 var(--ktm-road-label);
+  width: var(--ktm-road-label);
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: 0 var(--size-4-2);
+  overflow: hidden;
+}
+
+.ktm-road-corner {
+  flex-direction: column;
+}
+
+.ktm-road-axis-head {
+  box-sizing: border-box;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.ktm-road-head-top,
+.ktm-road-head-bottom {
+  box-sizing: border-box;
+  display: flex;
+}
+
+.ktm-road-head-top {
+  height: var(--ktm-road-head-top);
+}
+
+.ktm-road-head-bottom {
+  height: var(--ktm-road-head-bottom);
+  border-bottom: 1px solid var(--ktm-card-border);
+}
+
+.ktm-road-head-cell {
+  box-sizing: border-box;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  white-space: nowrap;
+  border-right: 1px solid color-mix(in srgb, var(--background-modifier-border) 45%, transparent);
+}
+
+.ktm-road-head-top .ktm-road-head-cell {
+  font-size: 12px;
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+}
+
+.ktm-road-head-bottom .ktm-road-head-cell {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.ktm-road-head-cell[data-current='true'] {
+  color: var(--text-accent);
+}
+
+.ktm-road-gridline {
+  position: absolute;
+  top: calc(var(--ktm-road-head-top) + var(--ktm-road-head-bottom));
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--background-modifier-border) 45%, transparent);
+  pointer-events: none;
+}
+
+.ktm-road-today-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--interactive-accent);
+  z-index: 1;
+  pointer-events: none;
+}
+
+.ktm-road-body {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.ktm-road-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: stretch;
+  height: var(--ktm-road-row);
+  border-bottom: 1px solid var(--ktm-card-border);
+  cursor: pointer;
+}
+
+.ktm-road-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-road-row[data-kind='project'] {
+  height: var(--ktm-road-row-project);
+  background: var(--background-secondary);
+  cursor: default;
+}
+
+.ktm-road-row[data-kind='project']:hover {
+  background: var(--background-secondary);
+}
+
+.ktm-road-row[data-kind='project'] .ktm-road-title {
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+}
+
+.ktm-road-icon svg {
+  flex: none;
+  width: var(--icon-s);
+  height: var(--icon-s);
+  color: var(--text-faint);
+}
+
+.ktm-road-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+}
+
+/* Kontextzeile (012 "Für alle Darstellungen"): Vorfahr eines Treffers, selbst
+   kein Treffer, bleibt blass stehen statt zu verschwinden. */
+.ktm-road-row[data-context='true'] .ktm-road-title {
+  color: var(--text-faint);
+}
+
+.ktm-road-row[data-context='true'] .ktm-road-bar,
+.ktm-road-row[data-context='true'] .ktm-road-frame,
+.ktm-road-row[data-context='true'] .ktm-road-point {
+  opacity: 0.5;
+}
+
+.ktm-road-track {
+  position: relative;
+  box-sizing: border-box;
+  flex: none;
+}
+
+.ktm-road-bar,
+.ktm-road-frame {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  box-sizing: border-box;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: 0 6px;
+  overflow: hidden;
+  border-radius: var(--radius-s);
+  font-size: 12px;
+  color: var(--text-normal);
+}
+
+.ktm-road-bar {
+  background: color-mix(in srgb, var(--interactive-accent) 35%, var(--background-primary));
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 60%, transparent);
+}
+
+.ktm-road-bar[data-done='true'] {
+  background: color-mix(in srgb, var(--color-green) 22%, var(--background-primary));
+  border-color: transparent;
+}
+
+/* Abgeleiteter Beginn (012 "Roadmap"): frühestes started der Nachfahren. */
+.ktm-road-bar[data-start-derived='true'] {
+  border-left-style: dotted;
+  border-left-width: 2px;
+  border-left-color: var(--text-muted);
+}
+
+/* Überfällig: innere rechte Kante (012 "Roadmap", DESIGN.md Farbe: Rot nur für Fälligkeit). */
+.ktm-road-bar[data-overdue='true'] {
+  box-shadow: inset -3px 0 0 0 var(--color-red);
+}
+
+/* Ohne Fälligkeit: gestrichelte rechte Kante statt der durchgezogenen. */
+.ktm-road-bar[data-openend='true'] {
+  border-right-style: dashed;
+}
+
+.ktm-road-bar-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ktm-road-bar-progress {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Fortschritt der Tasks (012 "Roadmap"): untere grüne Kante. */
+.ktm-road-bar-done {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--color-green);
+}
+
+/* Noch nicht begonnen, Geplant bis Fällig (012 S24, "Roadmap"): kein Füllton, gestrichelter Rahmen. */
+.ktm-road-frame {
+  background: transparent;
+  border: 1px dashed var(--background-modifier-border-hover);
+}
+
+.ktm-road-point,
+.ktm-road-diamond {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--text-muted);
+}
+
+.ktm-road-point {
+  width: var(--ktm-road-point);
+  height: var(--ktm-road-point);
+  border-radius: 50%;
+}
+
+.ktm-road-point[data-done='true'] {
+  background: color-mix(in srgb, var(--color-green) 80%, transparent);
+}
+
+.ktm-road-point[data-overdue='true'] {
+  background: var(--color-red);
+}
+
+.ktm-road-diamond {
+  width: var(--ktm-road-diamond);
+  height: var(--ktm-road-diamond);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.ktm-road-diamond[data-done='true'] {
+  background: color-mix(in srgb, var(--color-green) 80%, transparent);
+}
+
+/* Unterkopf-Legende (012 "Roadmap", DESIGN.md "Im Unterkopf eine Legende"). */
+.ktm-road-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-3);
+  margin-right: var(--size-4-3);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.ktm-road-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+.ktm-road-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.ktm-road-legend-active {
+  background: color-mix(in srgb, var(--interactive-accent) 35%, var(--background-primary));
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 60%, transparent);
+}
+
+.ktm-road-legend-overdue {
+  background: var(--background-primary);
+  box-shadow: inset -3px 0 0 0 var(--color-red);
+}
+
+.ktm-road-legend-done {
+  background: color-mix(in srgb, var(--color-green) 22%, var(--background-primary));
+}
+
+.ktm-road-legend-planned {
+  background: transparent;
+  border: 1px dashed var(--background-modifier-border-hover);
+}
+
+/* Raster-Segment (012 "Roadmap"): im Stil des Ebenen-Schalters, aber in der
+   Dichte des Unterkopfs (26 px) statt der Werkzeugleiste. */
+.ktm-road-subheader .ktm-level-button {
+  height: 26px;
+}
+
+/* Monatswahl der Roadmap (012 "Roadmap"): Popover in der Form des
+   Wochenkalenders (DESIGN.md Komponente "Wochenkalender"), Monatszellen
+   statt Wochenzeilen. */
+.ktm-roadcal {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  width: 320px;
+  padding: var(--size-4-2);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-s);
+}
+
+.ktm-roadcal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--size-4-2);
+}
+
+.ktm-roadcal-nav {
+  display: inline-flex;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.ktm-roadcal-nav svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.ktm-roadcal-title {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+}
+
+.ktm-roadcal-year + .ktm-roadcal-year {
+  margin-top: var(--size-4-2);
+}
+
+.ktm-roadcal-year-label {
+  display: block;
+  margin-bottom: var(--size-4-1);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.ktm-roadcal-months {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 2px;
+}
+
+.ktm-roadcal-month {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  border-radius: 4px;
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.ktm-roadcal-month:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ktm-roadcal-month[data-picked='true'] {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.ktm-roadcal-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-1);
+  margin-top: var(--size-4-2);
+  padding-top: var(--size-4-2);
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.ktm-roadcal-suggestion {
+  padding: 4px var(--size-4-2);
+  border-radius: 999px;
+  background: var(--tag-background);
+  color: var(--text-accent);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.ktm-roadcal-suggestion:hover {
+  background: color-mix(in srgb, var(--interactive-accent) 20%, var(--tag-background));
+}
+
+/* Matrix (012 "Matrix", DESIGN.md Darstellungen "Matrix"): Raster 28 px ·
+   1fr · 1fr in beiden Richtungen, neun Kinder in Lesereihenfolge (Ecke, zwei
+   waagerechte Achsen, je eine senkrechte Achse vor den zwei Feldern ihrer
+   Zeile) füllen das Raster von selbst. */
+.ktm-matrix {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 28px 1fr 1fr;
+  grid-template-rows: 28px 1fr 1fr;
+  gap: var(--size-4-3);
+  padding: 0 var(--size-4-3) var(--size-4-3);
+}
+
+.ktm-matrix-axis {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.ktm-matrix-axis-v {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+/* Breite aus dem Raster (1fr), nicht die 280 px Mindestbreite der .ktm-column. */
+.ktm-matrix-quad {
+  min-width: 0;
+}
+
+.ktm-matrix-quad-titles {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.ktm-matrix-quad-subtitle {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ktm-matrix-quad[data-quadrant='now'] .ktm-column-title {
+  color: var(--color-red);
+}
+
+.ktm-matrix-quad .ktm-column-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  align-content: start;
+}
+
+/* Rückblick (012 "Rückblick", DESIGN.md Darstellungen "Rückblick"): je Woche
+   ein Block auf --background-secondary, Raster 220 px (links) · Rest. */
+.ktm-retro-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  padding: 0 var(--size-4-3) var(--size-4-3);
+  overflow-y: auto;
+}
+
+.ktm-retro {
+  width: 100%;
+  max-width: var(--ktm-retro-max);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-3);
+}
+
+.ktm-retro-week {
+  display: grid;
+  grid-template-columns: var(--ktm-retro-side) 1fr;
+  gap: var(--size-4-3);
+  background: var(--ktm-surface-column);
+  border-radius: var(--radius-m);
+  padding: var(--size-4-3);
+}
+
+.ktm-retro-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+  min-width: 0;
+}
+
+.ktm-retro-kw {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+}
+
+.ktm-retro-range {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.ktm-retro-count {
+  font-size: 28px;
+  font-weight: var(--font-semibold);
+  margin-top: var(--size-4-1);
+}
+
+.ktm-retro-count-label,
+.ktm-retro-level-count {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.ktm-retro-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--size-4-1);
+  height: var(--ktm-retro-bars-h);
+  margin-top: var(--size-4-2);
+}
+
+.ktm-retro-bar {
+  flex: 1;
+  min-width: 0;
+  height: var(--ktm-retro-bar-pct, 0%);
+  background: color-mix(in srgb, var(--color-green) 55%, transparent);
+  border-radius: var(--radius-s);
+}
+
+.ktm-retro-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-3);
+  min-width: 0;
+}
+
+.ktm-retro-project-title {
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  margin-bottom: var(--size-4-1);
+}
+
+.ktm-retro-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--size-4-2);
+  align-items: start;
+}
+
+.ktm-retro-item {
+  grid-column: 1 / -1;
+  background: var(--ktm-surface-card);
+  border: 1px solid var(--background-modifier-border-hover);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-2) var(--size-4-3);
+  cursor: pointer;
+}
+
+.ktm-retro-item[data-kind='epic'] {
+  border-color: color-mix(in srgb, var(--interactive-accent) 45%, transparent);
+}
+
+.ktm-retro-item-head {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+.ktm-retro-item-icon svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+  color: var(--text-faint);
+}
+
+.ktm-retro-item-title {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  flex: 1;
+  min-width: 0;
+}
+
+.ktm-retro-item-info {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.ktm-retro-badge {
+  flex: 0 0 auto;
+  padding: 0 var(--size-4-2);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-green) 22%, var(--background-primary));
+  color: var(--color-green);
+  font-size: 11px;
+}
+
+.ktm-retro-children {
+  grid-column: 1 / -1;
+  margin-top: var(--size-4-2);
+  margin-left: 10px;
+  padding-left: 14px;
+  border-left: 2px solid var(--background-modifier-border);
+}
+
+/* Portfolio (012 "Portfolio", DESIGN.md Darstellungen "Portfolio"): Kacheln
+   je Projekt/Epic/Feature in einem Raster, Verteilungsbalken, Signale und
+   Fortschritt wie im Baum (.ktm-tree-progress-*). */
+.ktm-portfolio-host {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--size-4-3) var(--size-4-3);
+}
+
+.ktm-portfolio {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--ktm-port-min), 1fr));
+  gap: var(--size-4-3);
+}
+
+.ktm-portfolio-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  min-width: 0;
+  background: var(--ktm-surface-column);
+  border-radius: var(--radius-m);
+  padding: var(--size-4-3) var(--size-4-4) var(--size-4-4);
+}
+
+.ktm-portfolio-tile[data-spotlight='dim'] {
+  opacity: 0.4;
+}
+
+.ktm-portfolio-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--size-4-2);
+}
+
+.ktm-portfolio-icon svg {
+  width: 18px;
+  height: 18px;
+  color: var(--text-faint);
+}
+
+.ktm-portfolio-name-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.ktm-portfolio-name {
+  font-size: 17px;
+  font-weight: var(--font-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ktm-portfolio-meta {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.ktm-portfolio-board {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 var(--size-4-3);
+  border: none;
+  border-radius: var(--radius-s);
+  background: var(--interactive-normal);
+  box-shadow: none;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+.ktm-portfolio-board:hover {
+  background: var(--interactive-hover);
+}
+
+.ktm-portfolio-bar {
+  display: flex;
+  height: var(--ktm-port-bar-h);
+  border-radius: calc(var(--ktm-port-bar-h) / 2);
+  overflow: hidden;
+  background: var(--background-modifier-border);
+}
+
+.ktm-portfolio-bar-segment[data-tone='done'] {
+  background: var(--color-green);
+}
+
+.ktm-portfolio-bar-segment[data-tone='active'] {
+  background: var(--interactive-accent);
+}
+
+.ktm-portfolio-bar-segment[data-tone='ready'] {
+  background: var(--color-cyan);
+}
+
+.ktm-portfolio-bar-segment[data-tone='open'] {
+  background: var(--interactive-hover);
+}
+
+.ktm-portfolio-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.ktm-portfolio-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+.ktm-portfolio-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--background-modifier-border);
+}
+
+.ktm-portfolio-legend-item[data-tone='done'] .ktm-portfolio-legend-dot {
+  background: var(--color-green);
+}
+
+.ktm-portfolio-legend-item[data-tone='active'] .ktm-portfolio-legend-dot {
+  background: var(--interactive-accent);
+}
+
+.ktm-portfolio-legend-item[data-tone='ready'] .ktm-portfolio-legend-dot {
+  background: var(--color-cyan);
+}
+
+.ktm-portfolio-legend-item[data-tone='open'] .ktm-portfolio-legend-dot {
+  background: var(--interactive-hover);
+}
+
+.ktm-portfolio-signals {
+  display: flex;
+  gap: var(--size-4-4);
+}
+
+.ktm-portfolio-signal-count {
+  font-size: 20px;
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.ktm-portfolio-signal[data-kind='overdue'] .ktm-portfolio-signal-count {
+  color: var(--color-red);
+}
+
+.ktm-portfolio-signal[data-kind='today'] .ktm-portfolio-signal-count {
+  color: var(--text-accent);
+}
+
+.ktm-portfolio-signal-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.ktm-portfolio-heading {
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+}
+
+.ktm-portfolio-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+}
+
+.ktm-portfolio-progress-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  cursor: pointer;
+}
+
+.ktm-portfolio-progress-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-ui-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ktm-portfolio-next {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
 }

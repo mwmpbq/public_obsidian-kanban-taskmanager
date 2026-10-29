@@ -28,6 +28,8 @@ export interface ParentRef {
 export interface FreeLink {
   kind: string;
   target: string;
+  /** Text after `|` in the source wikilink (002 S77), shown in place of the target's name. */
+  alias?: string;
 }
 
 export interface ElementPaths {
@@ -51,6 +53,8 @@ export interface BoardElement {
   priority: number;
   planned?: string;
   due?: string;
+  /** Start date (008, Ergänzung 2026-10-25 "Startdatum started"). */
+  started?: string;
   completed?: string;
   ticket?: number;
   summary?: string;
@@ -71,6 +75,6 @@ export interface BoardElement {
   ownFolder?: boolean;
   /** Surfaced in the board's notice area, e.g. an unresolved `parent` (011 S57). */
   notice?: string;
-  /** `ktm_placement` (011, Ergänzung 2026-09-25): anything but `manual` reads as `auto`. */
+  /** `ktm_placement` (011, Ergänzung 2026-10-19): anything but the literal string `auto` reads as `manual`; a missing key stays `auto`. */
   placement?: 'auto' | 'manual';
 }

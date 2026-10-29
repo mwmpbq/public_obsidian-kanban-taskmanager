@@ -1,9 +1,10 @@
-import { dueState } from './dates';
+import { dayDiff, dueState } from './dates';
 import type { BoardElement } from './model';
 import { isBottomLevel, type Level } from './settings';
 
 export interface TodayTasks {
   overdue: BoardElement[];
+  dueToday: BoardElement[];
   planned: BoardElement[];
 }
 
@@ -13,19 +14,25 @@ export const DEFAULT_TODAY_SORT: TodayKey[] = ['project', 'due', 'priority'];
 
 export interface TodayTile {
   element: BoardElement;
-  kind: 'overdue' | 'planned';
-  // Overdue tiles carry their due date, planned tiles their planned date; this
-  // is the date that both the ordering and the tile's signal read.
+  kind: 'overdue' | 'due' | 'planned';
+  // Overdue and due-today tiles carry their due date, planned tiles their
+  // planned date; this is the date that both the ordering and the tile's
+  // signal read.
   date: string;
 }
 
 /**
- * Selects the tasks the "Heute" area reports, across every project: open tasks
- * whose due date lies in the past (overdue) and — unless the planned report is
- * switched off — open tasks planned for today. Only elements at their
- * project's bottom level qualify (F072, S22: not a fixed `'task'`); features
- * and epics never appear, so the board's level does not narrow the set. Done
- * and invalid tasks are left out. Ordering is left to the caller (F020).
+ * Selects the tasks the "Heute" area reports, across every project, each in
+ * exactly one of three groups ranked overdue, due today, planned (004
+ * Ergänzung 2026-10-18): open tasks whose due date lies in the past, open
+ * tasks due today (unless `notifyDue` is off), and open tasks planned for
+ * today or earlier (unless `notifyPlanned` is off) — a stale planning does not
+ * drop out the next day. A task that would qualify for a switched-off group
+ * is left out entirely rather than falling through to the next group (S15).
+ * Only elements at their project's bottom level qualify (F072, S22: not a
+ * fixed `'task'`); features and epics never appear, so the board's level does
+ * not narrow the set. Done and invalid tasks are left out. Ordering is left
+ * to the caller (F020).
  */
 export function today(
   elements: BoardElement[],
@@ -33,15 +40,25 @@ export function today(
   isDone: (task: BoardElement) => boolean,
   notifyPlanned: boolean,
   levelsFor: (project: string) => Level[],
+  notifyDue = true,
 ): TodayTasks {
   const tasks = elements.filter(
     (el) => isBottomLevel(levelsFor(el.project ?? ''), el.type) && !el.invalid && !isDone(el),
   );
-  const overdue = tasks.filter((el) => el.due !== undefined && dueState(el.due, todayISO) === 'overdue');
-  const planned = notifyPlanned
-    ? tasks.filter((el) => el.planned !== undefined && dueState(el.planned, todayISO) === 'today')
-    : [];
-  return { overdue, planned };
+  const overdue: BoardElement[] = [];
+  const dueToday: BoardElement[] = [];
+  const planned: BoardElement[] = [];
+  for (const el of tasks) {
+    const due = el.due !== undefined ? dueState(el.due, todayISO) : undefined;
+    if (due === 'overdue') {
+      overdue.push(el);
+    } else if (due === 'today') {
+      if (notifyDue) dueToday.push(el);
+    } else if (el.planned !== undefined && (dayDiff(el.planned, todayISO) ?? 1) <= 0) {
+      if (notifyPlanned) planned.push(el);
+    }
+  }
+  return { overdue, dueToday, planned };
 }
 
 /**

@@ -34,6 +34,37 @@ export function todayISO(override?: unknown): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
+/**
+ * Milliseconds from `now` to the next local midnight (F106 K1). Local, not
+ * UTC: `new Date(y, m, d + 1)` lets the runtime's own DST rules produce a
+ * 23- or 25-hour day around a transition, which a UTC calculation would miss.
+ */
+export function msUntilNextMidnight(now: Date): number {
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  return next.getTime() - now.getTime();
+}
+
+// Monday of `dateISO`'s own ISO week, via the same UTC arithmetic as
+// isoWeek/monthGrid (012, "Woche"): never through `Date#toISOString`, which
+// shifts the day across a time-zone boundary.
+export function mondayOf(dateISO: string): string {
+  const p = parse(dateISO);
+  if (!p) return dateISO;
+  const day = new Date(utc(p));
+  const mondayOffset = (day.getUTCDay() + 6) % 7;
+  day.setUTCDate(day.getUTCDate() - mondayOffset);
+  return `${day.getUTCFullYear()}-${pad(day.getUTCMonth() + 1)}-${pad(day.getUTCDate())}`;
+}
+
+// `dateISO` plus `n` days (negative moves back), for the week's day columns
+// and its "±7 Tage" arrows (012).
+export function addDays(dateISO: string, n: number): string {
+  const p = parse(dateISO);
+  if (!p) return dateISO;
+  const day = new Date(utc(p) + n * 86400000);
+  return `${day.getUTCFullYear()}-${pad(day.getUTCMonth() + 1)}-${pad(day.getUTCDate())}`;
+}
+
 export function dayDiff(dateISO: string, todayISO: string): number | undefined {
   const a = parse(dateISO);
   const b = parse(todayISO);
@@ -66,6 +97,16 @@ export function relativeDate(dateISO: string, todayISO: string): string {
   if (diff === 1) return 'morgen';
   if (diff <= 6) return `in ${diff} Tagen`;
   return absoluteDate(dateISO, todayISO);
+}
+
+// Tag und Monat ohne Wochentag (012 "Baum"): die Spalte Gestartet zeigt
+// einen reinen Kalendertag statt relativer Nähe ("gestern", "vor n Tagen"),
+// anders als Geplant/Fällig (relativeDate), weil sie keinen Signalzustand
+// trägt (DESIGN.md "Farbe").
+export function shortDate(dateISO: string): string {
+  const a = parse(dateISO);
+  if (!a) return dateISO;
+  return `${pad(a.d)}.${pad(a.m)}.`;
 }
 
 export type DueState = 'overdue' | 'today' | undefined;
@@ -146,7 +187,7 @@ export interface CalendarWeek {
 // ISO 8601 week number: the week of the Thursday that falls in the same
 // Monday-start week as the given day (weeks.iso, RFC compatible with the "KW"
 // column of the calendar popover).
-function isoWeek(dayUtcMs: number): number {
+export function isoWeek(dayUtcMs: number): number {
   const thursday = new Date(dayUtcMs);
   const mondayOffset = (thursday.getUTCDay() + 6) % 7;
   thursday.setUTCDate(thursday.getUTCDate() - mondayOffset + 3);

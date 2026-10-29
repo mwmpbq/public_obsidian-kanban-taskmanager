@@ -37,6 +37,60 @@ export interface ParentChoice {
   project?: string;
 }
 
+export interface CreateValues {
+  title?: string;
+  due?: string;
+  planned?: string;
+  priority?: string;
+}
+
+/**
+ * Whether `value` is `YYYY-MM-DD` of a calendar day that really exists: a
+ * round trip through year/month/day via the `Date` constructor's local-time
+ * overload, not through `parseDateInput` (which also accepts words like
+ * "morgen") and not through `toISOString` (which can shift the day across a
+ * time zone, see konventionen "nie über Date und toISOString zurückrechnen").
+ * `new Date(y, m, d)` rolls an out-of-range day/month into the next one
+ * instead of rejecting it, so the result is compared back against the input.
+ */
+function isValidCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+}
+
+/**
+ * Prüfung der `ktm:create`-Eingaben (011, Ergänzung 2026-10-19): `title` ist
+ * Pflicht und bleibt nach `trim()` nicht leer; `due`/`planned` sind, wenn
+ * gesetzt, nur als `YYYY-MM-DD` eines echten Kalendertags gültig; `priority`
+ * ist, wenn gesetzt, nur eine Ziffernfolge mit ganzzahligem Wert 1 bis 4.
+ * Reine Funktion ohne Obsidian-Import (K1), gibt die erste Ablehnung mit dem
+ * betroffenen Parameter im Text zurück, oder `null`.
+ */
+export function validateCreateValues(values: CreateValues): string | null {
+  if (values.title === undefined || values.title.trim() === '') {
+    return 'title fehlt oder ist leer (title).';
+  }
+  if (values.due !== undefined && !isValidCalendarDate(values.due)) {
+    return `ungültiges Datum bei due „${values.due}“ (due).`;
+  }
+  if (values.planned !== undefined && !isValidCalendarDate(values.planned)) {
+    return `ungültiges Datum bei planned „${values.planned}“ (planned).`;
+  }
+  if (values.priority !== undefined) {
+    const isDigitSequence = /^\d+$/.test(values.priority);
+    const priority = Number(values.priority);
+    if (!isDigitSequence || priority < 1 || priority > 4) {
+      return `ungültige Priorität „${values.priority}“ (priority).`;
+    }
+  }
+  return null;
+}
+
 /**
  * Folder- and file-name slug of a title: lower case, apostrophes dropped, every
  * run of non-alphanumerics collapsed to a single hyphen, trimmed. Matches the
